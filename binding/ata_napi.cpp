@@ -52,7 +52,12 @@ struct schema_node {
   std::unordered_map<std::string, std::vector<std::string>> dependent_required;
   std::unordered_map<std::string, schema_node_ptr> dependent_schemas;
 
-  std::vector<std::pair<std::string, schema_node_ptr>> pattern_properties;
+  struct pattern_prop {
+    std::string pattern;
+    schema_node_ptr schema;
+    std::shared_ptr<std::regex> compiled;
+  };
+  std::vector<pattern_prop> pattern_properties;
 
   std::optional<std::string> enum_values_raw;
   std::vector<std::string> enum_values_minified;
@@ -521,15 +526,11 @@ static void validate_napi(const schema_node_ptr& node,
         matched = true;
       }
 
-      for (const auto& [pat, pat_schema] : node->pattern_properties) {
-        try {
-          std::regex re(pat);
-          if (std::regex_search(key_str, re)) {
-            validate_napi(pat_schema, val, env, path + "/" + key_str, ctx,
-                          errors);
-            matched = true;
-          }
-        } catch (...) {
+      for (const auto& pp : node->pattern_properties) {
+        if (pp.compiled && std::regex_search(key_str, *pp.compiled)) {
+          validate_napi(pp.schema, val, env, path + "/" + key_str, ctx,
+                        errors);
+          matched = true;
         }
       }
 

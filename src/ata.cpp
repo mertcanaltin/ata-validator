@@ -176,8 +176,13 @@ struct schema_node {
   std::unordered_map<std::string, std::vector<std::string>> dependent_required;
   std::unordered_map<std::string, schema_node_ptr> dependent_schemas;
 
-  // patternProperties
-  std::vector<std::pair<std::string, schema_node_ptr>> pattern_properties;
+  // patternProperties — each entry: (pattern_string, schema, compiled_regex)
+  struct pattern_prop {
+    std::string pattern;
+    schema_node_ptr schema;
+    std::shared_ptr<std::regex> compiled;
+  };
+  std::vector<pattern_prop> pattern_properties;
 
   // enum / const
   std::optional<std::string> enum_values_raw;  // raw JSON array string
@@ -424,13 +429,24 @@ static schema_node_ptr compile_node(dom::element el,
     }
   }
 
-  // patternProperties
+  // patternProperties — compile regex at schema compile time
   dom::element pp_el;
   if (obj["patternProperties"].get(pp_el) == SUCCESS &&
       pp_el.is<dom::object>()) {
-    dom::object pp_obj; pp_el.get(pp_obj); for (auto [key, val] : pp_obj) {
-      node->pattern_properties.emplace_back(std::string(key),
-                                             compile_node(val, ctx));
+    dom::object pp_obj; pp_el.get(pp_obj);
+    for (auto [key, val] : pp_obj) {
+      schema_node::pattern_prop pp;
+      pp.pattern = std::string(key);
+      pp.schema = compile_node(val, ctx);
+      bool safe = pp.pattern.find("\\p{") == std::string::npos &&
+                  pp.pattern.find("\\P{") == std::string::npos;
+      if (safe) {
+        try {
+          pp.compiled = std::make_shared<std::regex>(pp.pattern);
+        } catch (...) {
+        }
+      }
+      node->pattern_properties.push_back(std::move(pp));
     }
   }
 
@@ -953,15 +969,11 @@ static void validate_node(const schema_node_ptr& node,
         matched = true;
       }
 
-      // Check patternProperties
-      for (const auto& [pat, pat_schema] : node->pattern_properties) {
-        try {
-          std::regex re(pat);
-          if (std::regex_search(key_str, re)) {
-            validate_node(pat_schema, val, path + "/" + key_str, ctx, errors, all_errors);
-            matched = true;
-          }
-        } catch (...) {
+      // Check patternProperties (use cached compiled regex)
+      for (const auto& pp : node->pattern_properties) {
+        if (pp.compiled && std::regex_search(key_str, *pp.compiled)) {
+          validate_node(pp.schema, val, path + "/" + key_str, ctx, errors, all_errors);
+          matched = true;
         }
       }
 
