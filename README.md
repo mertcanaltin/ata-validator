@@ -6,10 +6,12 @@ A blazing-fast C++ JSON Schema validator powered by [simdjson](https://github.co
 
 ### Schema Compilation
 
-| Validator | ops/sec | Ratio |
-|---|---|---|
-| **ata** | **175,548** | **11,000x faster** |
-| ajv | 16 | baseline |
+| Validator | ops/sec |
+|---|---|
+| **ata** | **175,548** |
+| ajv | 16 |
+
+> ata compiles schemas **11,000x faster** than ajv.
 
 ### JSON String Validation (real-world scenario)
 
