@@ -27,7 +27,7 @@ A blazing-fast C++ JSON Schema validator powered by [simdjson](https://github.co
 
 ### JSON Schema Test Suite
 
-**97.1%** pass rate on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12).
+**97.6%** pass rate (803/823) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12).
 
 ## Features
 
@@ -170,8 +170,8 @@ int main(void) {
 | Type | `type` (string, number, integer, boolean, null, array, object, union) |
 | Numeric | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf` |
 | String | `minLength`, `maxLength`, `pattern`, `format` |
-| Array | `items`, `prefixItems`, `minItems`, `maxItems`, `uniqueItems` |
-| Object | `properties`, `required`, `additionalProperties`, `patternProperties`, `minProperties`, `maxProperties` |
+| Array | `items`, `prefixItems`, `minItems`, `maxItems`, `uniqueItems`, `contains`, `minContains`, `maxContains` |
+| Object | `properties`, `required`, `additionalProperties`, `patternProperties`, `minProperties`, `maxProperties`, `propertyNames`, `dependentRequired`, `dependentSchemas` |
 | Enum/Const | `enum`, `const` |
 | Composition | `allOf`, `anyOf`, `oneOf`, `not` |
 | Conditional | `if`, `then`, `else` |
