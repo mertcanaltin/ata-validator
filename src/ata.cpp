@@ -300,11 +300,17 @@ static schema_node_ptr compile_node(dom::element el,
     std::string_view sv;
     if (str_el.get(sv) == SUCCESS) {
       node->pattern = std::string(sv);
-      try {
-        node->compiled_pattern =
-            std::make_shared<std::regex>(node->pattern.value());
-      } catch (...) {
-        // Invalid regex — leave compiled_pattern null
+      // Skip patterns with Unicode property escapes (\p{...}) —
+      // std::regex doesn't support them and may abort on some platforms
+      bool safe_pattern = node->pattern.value().find("\\p{") == std::string::npos &&
+                          node->pattern.value().find("\\P{") == std::string::npos;
+      if (safe_pattern) {
+        try {
+          node->compiled_pattern =
+              std::make_shared<std::regex>(node->pattern.value());
+        } catch (...) {
+          // Invalid regex — leave compiled_pattern null
+        }
       }
     }
   }
