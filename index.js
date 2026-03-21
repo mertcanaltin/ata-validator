@@ -1,4 +1,4 @@
-const native = require("./build/Release/ata.node");
+const native = require("node-gyp-build")(__dirname);
 
 class Validator {
   constructor(schema) {
@@ -15,7 +15,7 @@ class Validator {
 
   // Force JSON string path (simdjson parse + validate)
   validateJSON(jsonStr) {
-    return this._compiled.validate(jsonStr);
+    return this._compiled.validateJSON(jsonStr);
   }
 }
 

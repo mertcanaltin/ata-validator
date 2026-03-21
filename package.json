@@ -1,19 +1,63 @@
 {
   "name": "ata-validator",
   "version": "0.1.0",
-  "description": "Ultra-fast JSON Schema validator powered by simdjson",
+  "description": "Ultra-fast JSON Schema validator powered by simdjson. 11,000x faster schema compilation, 2-4x faster validation than ajv.",
   "main": "index.js",
   "scripts": {
-    "install": "node-gyp rebuild",
-    "build": "node-gyp build",
-    "test": "node test.js"
+    "install": "node-gyp-build",
+    "build": "node-gyp rebuild",
+    "prebuild": "prebuildify --napi --strip",
+    "prebuild-all": "prebuildify --napi --strip --arch x64 && prebuildify --napi --strip --arch arm64",
+    "test": "node test.js",
+    "test:suite": "node tests/run_suite.js",
+    "test:compat": "node tests/test_compat.js",
+    "bench": "node benchmark/bench_large.js"
   },
-  "keywords": ["json", "schema", "validator", "fast", "native", "simdjson", "napi"],
-  "author": "Mert Can Altin",
+  "keywords": [
+    "json",
+    "json-schema",
+    "schema",
+    "validator",
+    "validation",
+    "fast",
+    "native",
+    "simdjson",
+    "napi",
+    "ajv",
+    "ajv-alternative"
+  ],
+  "author": "Mert Can Altin <mertcanaltin01@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mertcanaltin/ata.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mertcanaltin/ata/issues"
+  },
+  "homepage": "https://github.com/mertcanaltin/ata#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "index.js",
+    "compat.js",
+    "binding.gyp",
+    "binding/",
+    "include/",
+    "src/",
+    "deps/",
+    "prebuilds/",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
-    "node-addon-api": "^8.0.0",
-    "node-gyp": "^11.0.0"
+    "node-addon-api": "^8.0.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^11.0.0",
+    "node-gyp-build": "^4.8.4",
+    "prebuildify": "^6.0.1"
   },
   "gypfile": true
 }

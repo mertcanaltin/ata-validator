@@ -1,0 +1,12 @@
+cmake-build/
+build/Release/.deps/
+build/Release/obj.target/
+benchmark/
+tests/
+test.js
+.git/
+.github/
+.gitignore
+CMakeLists.txt
+*.md
+!README.md
