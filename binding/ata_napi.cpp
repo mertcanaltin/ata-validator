@@ -38,6 +38,9 @@ struct schema_node {
   bool unique_items = false;
   schema_node_ptr items_schema;
   std::vector<schema_node_ptr> prefix_items;
+  schema_node_ptr contains_schema;
+  std::optional<uint64_t> min_contains;
+  std::optional<uint64_t> max_contains;
 
   std::unordered_map<std::string, schema_node_ptr> properties;
   std::vector<std::string> required;
@@ -45,6 +48,9 @@ struct schema_node {
   schema_node_ptr additional_properties_schema;
   std::optional<uint64_t> min_properties;
   std::optional<uint64_t> max_properties;
+  schema_node_ptr property_names_schema;
+  std::unordered_map<std::string, std::vector<std::string>> dependent_required;
+  std::unordered_map<std::string, schema_node_ptr> dependent_schemas;
 
   std::vector<std::pair<std::string, schema_node_ptr>> pattern_properties;
 
@@ -449,6 +455,28 @@ static void validate_napi(const schema_node_ptr& node,
                       path + "/" + std::to_string(i), ctx, errors);
       }
     }
+
+    // contains / minContains / maxContains
+    if (node->contains_schema) {
+      uint64_t match_count = 0;
+      for (uint32_t i = 0; i < arr_size; ++i) {
+        std::vector<ata::validation_error> tmp;
+        validate_napi(node->contains_schema, arr.Get(i), env, path, ctx, tmp);
+        if (tmp.empty()) ++match_count;
+      }
+      uint64_t min_c = node->min_contains.value_or(1);
+      uint64_t max_c = node->max_contains.value_or(arr_size);
+      if (match_count < min_c) {
+        errors.push_back({ata::error_code::min_items_violation, path,
+                          "contains: " + std::to_string(match_count) +
+                              " matches, minimum " + std::to_string(min_c)});
+      }
+      if (match_count > max_c) {
+        errors.push_back({ata::error_code::max_items_violation, path,
+                          "contains: " + std::to_string(match_count) +
+                              " matches, maximum " + std::to_string(max_c)});
+      }
+    }
   }
 
   // Object validations
@@ -515,6 +543,35 @@ static void validate_napi(const schema_node_ptr& node,
           validate_napi(node->additional_properties_schema, val, env,
                         path + "/" + key_str, ctx, errors);
         }
+      }
+    }
+
+    // propertyNames
+    if (node->property_names_schema) {
+      for (uint32_t i = 0; i < prop_count; ++i) {
+        Napi::Value key_val = keys.Get(i);
+        validate_napi(node->property_names_schema, key_val, env, path, ctx,
+                      errors);
+      }
+    }
+
+    // dependentRequired
+    for (const auto& [prop, deps] : node->dependent_required) {
+      if (obj.HasOwnProperty(prop)) {
+        for (const auto& dep : deps) {
+          if (!obj.HasOwnProperty(dep)) {
+            errors.push_back({ata::error_code::required_property_missing, path,
+                              "property '" + prop + "' requires '" + dep +
+                                  "' to be present"});
+          }
+        }
+      }
+    }
+
+    // dependentSchemas
+    for (const auto& [prop, schema] : node->dependent_schemas) {
+      if (obj.HasOwnProperty(prop)) {
+        validate_napi(schema, value, env, path, ctx, errors);
       }
     }
   }

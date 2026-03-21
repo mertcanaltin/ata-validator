@@ -161,6 +161,9 @@ struct schema_node {
   bool unique_items = false;
   schema_node_ptr items_schema;
   std::vector<schema_node_ptr> prefix_items;
+  schema_node_ptr contains_schema;
+  std::optional<uint64_t> min_contains;
+  std::optional<uint64_t> max_contains;
 
   // object
   std::unordered_map<std::string, schema_node_ptr> properties;
@@ -169,6 +172,9 @@ struct schema_node {
   schema_node_ptr additional_properties_schema;
   std::optional<uint64_t> min_properties;
   std::optional<uint64_t> max_properties;
+  schema_node_ptr property_names_schema;
+  std::unordered_map<std::string, std::vector<std::string>> dependent_required;
+  std::unordered_map<std::string, schema_node_ptr> dependent_schemas;
 
   // patternProperties
   std::vector<std::pair<std::string, schema_node_ptr>> pattern_properties;
@@ -327,6 +333,21 @@ static schema_node_ptr compile_node(dom::element el,
     node->items_schema = compile_node(items_el, ctx);
   }
 
+  // contains
+  dom::element contains_el;
+  if (obj["contains"].get(contains_el) == SUCCESS) {
+    node->contains_schema = compile_node(contains_el, ctx);
+  }
+  dom::element mc_el;
+  if (obj["minContains"].get(mc_el) == SUCCESS) {
+    uint64_t v;
+    if (mc_el.get(v) == SUCCESS) node->min_contains = v;
+  }
+  if (obj["maxContains"].get(mc_el) == SUCCESS) {
+    uint64_t v;
+    if (mc_el.get(v) == SUCCESS) node->max_contains = v;
+  }
+
   // object constraints
   dom::element props_el;
   if (obj["properties"].get(props_el) == SUCCESS && props_el.is<dom::object>()) {
@@ -361,6 +382,37 @@ static schema_node_ptr compile_node(dom::element el,
   if (obj["maxProperties"].get(str_el) == SUCCESS) {
     uint64_t v;
     if (str_el.get(v) == SUCCESS) node->max_properties = v;
+  }
+
+  // propertyNames
+  dom::element pn_el;
+  if (obj["propertyNames"].get(pn_el) == SUCCESS) {
+    node->property_names_schema = compile_node(pn_el, ctx);
+  }
+
+  // dependentRequired
+  dom::element dr_el;
+  if (obj["dependentRequired"].get(dr_el) == SUCCESS &&
+      dr_el.is<dom::object>()) {
+    for (auto [key, val] : dom::object(dr_el)) {
+      std::vector<std::string> deps;
+      if (val.is<dom::array>()) {
+        for (auto d : dom::array(val)) {
+          std::string_view sv;
+          if (d.get(sv) == SUCCESS) deps.emplace_back(sv);
+        }
+      }
+      node->dependent_required[std::string(key)] = std::move(deps);
+    }
+  }
+
+  // dependentSchemas
+  dom::element ds_el;
+  if (obj["dependentSchemas"].get(ds_el) == SUCCESS &&
+      ds_el.is<dom::object>()) {
+    for (auto [key, val] : dom::object(ds_el)) {
+      node->dependent_schemas[std::string(key)] = compile_node(val, ctx);
+    }
   }
 
   // patternProperties
@@ -815,12 +867,34 @@ static void validate_node(const schema_node_ptr& node,
       for (auto item : arr) {
         if (idx < node->prefix_items.size()) {
           validate_node(node->prefix_items[idx], item,
-                        path + "/" + std::to_string(idx), ctx, errors);
+                        path + "/" + std::to_string(idx), ctx, errors, all_errors);
         } else if (node->items_schema) {
           validate_node(node->items_schema, item,
-                        path + "/" + std::to_string(idx), ctx, errors);
+                        path + "/" + std::to_string(idx), ctx, errors, all_errors);
         }
         ++idx;
+      }
+    }
+
+    // contains / minContains / maxContains
+    if (node->contains_schema) {
+      uint64_t match_count = 0;
+      for (auto item : arr) {
+        std::vector<validation_error> tmp;
+        validate_node(node->contains_schema, item, path, ctx, tmp, false);
+        if (tmp.empty()) ++match_count;
+      }
+      uint64_t min_c = node->min_contains.value_or(1);
+      uint64_t max_c = node->max_contains.value_or(arr_size);
+      if (match_count < min_c) {
+        errors.push_back({error_code::min_items_violation, path,
+                          "contains: " + std::to_string(match_count) +
+                              " matches, minimum " + std::to_string(min_c)});
+      }
+      if (match_count > max_c) {
+        errors.push_back({error_code::max_items_violation, path,
+                          "contains: " + std::to_string(match_count) +
+                              " matches, maximum " + std::to_string(max_c)});
       }
     }
   }
@@ -890,6 +964,43 @@ static void validate_node(const schema_node_ptr& node,
           validate_node(node->additional_properties_schema, val,
                         path + "/" + key_str, ctx, errors);
         }
+      }
+    }
+
+    // propertyNames
+    if (node->property_names_schema) {
+      for (auto [key, val] : obj) {
+        // Create a string element to validate the key
+        std::string key_json = "\"" + std::string(key) + "\"";
+        dom::parser key_parser;
+        auto key_result = key_parser.parse(key_json);
+        if (!key_result.error()) {
+          validate_node(node->property_names_schema, key_result.value(),
+                        path, ctx, errors, all_errors);
+        }
+      }
+    }
+
+    // dependentRequired
+    for (const auto& [prop, deps] : node->dependent_required) {
+      dom::element dummy;
+      if (obj[prop].get(dummy) == SUCCESS) {
+        for (const auto& dep : deps) {
+          dom::element dep_dummy;
+          if (obj[dep].get(dep_dummy) != SUCCESS) {
+            errors.push_back({error_code::required_property_missing, path,
+                              "property '" + prop + "' requires '" + dep +
+                                  "' to be present"});
+          }
+        }
+      }
+    }
+
+    // dependentSchemas
+    for (const auto& [prop, schema] : node->dependent_schemas) {
+      dom::element dummy;
+      if (obj[prop].get(dummy) == SUCCESS) {
+        validate_node(schema, value, path, ctx, errors, all_errors);
       }
     }
   }

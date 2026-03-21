@@ -38,6 +38,12 @@ const SUPPORTED_FILES = [
   "boolean_schema.json",
   "ref.json",
   "defs.json",
+  "contains.json",
+  "minContains.json",
+  "maxContains.json",
+  "dependentRequired.json",
+  "dependentSchemas.json",
+  "propertyNames.json",
 ];
 
 let totalPass = 0;
