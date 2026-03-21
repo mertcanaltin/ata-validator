@@ -1,0 +1,9 @@
+build/
+cmake-build/
+node_modules/
+benchmark/node_modules/
+benchmark/package.json
+benchmark/package-lock.json
+tests/suite/
+*.node
+package-lock.json

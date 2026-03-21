@@ -1,0 +1,19 @@
+{
+  "name": "ata-validator",
+  "version": "0.1.0",
+  "description": "Ultra-fast JSON Schema validator powered by simdjson",
+  "main": "index.js",
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp build",
+    "test": "node test.js"
+  },
+  "keywords": ["json", "schema", "validator", "fast", "native", "simdjson", "napi"],
+  "author": "Mert Can Altin",
+  "license": "MIT",
+  "dependencies": {
+    "node-addon-api": "^8.0.0",
+    "node-gyp": "^11.0.0"
+  },
+  "gypfile": true
+}
