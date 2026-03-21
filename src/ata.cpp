@@ -543,11 +543,6 @@ static schema_node_ptr compile_node(dom::element el,
 
 // --- Validation ---
 
-// Fast validate — no path building for valid documents
-static bool validate_fast(const schema_node* node,
-                          dom::element value,
-                          const compiled_schema& ctx);
-
 static void validate_node(const schema_node_ptr& node,
                            dom::element value,
                            const std::string& path,
@@ -759,34 +754,14 @@ static void validate_node(const schema_node_ptr& node,
     }
   }
 
-  // enum — fast paths for common types to avoid minify()
+  // enum — use pre-minified values (no re-parsing)
   if (!node->enum_values_minified.empty()) {
+    std::string val_str = std::string(minify(value));
     bool found = false;
-    if (value.is<std::string_view>()) {
-      std::string_view sv;
-      value.get(sv);
-      for (const auto& ev : node->enum_values_minified) {
-        if (ev.size() == sv.size() + 2 && ev.front() == '"' &&
-            ev.back() == '"' && ev.compare(1, sv.size(), sv) == 0) {
-          found = true; break;
-        }
-      }
-    } else if (value.is<int64_t>()) {
-      int64_t v; value.get(v);
-      auto s = std::to_string(v);
-      for (const auto& ev : node->enum_values_minified) {
-        if (ev == s) { found = true; break; }
-      }
-    } else if (value.is<bool>()) {
-      bool v; value.get(v);
-      std::string_view s = v ? "true" : "false";
-      for (const auto& ev : node->enum_values_minified) {
-        if (ev == s) { found = true; break; }
-      }
-    } else {
-      std::string val_str = std::string(minify(value));
-      for (const auto& ev : node->enum_values_minified) {
-        if (ev == val_str) { found = true; break; }
+    for (const auto& ev : node->enum_values_minified) {
+      if (ev == val_str) {
+        found = true;
+        break;
       }
     }
     if (!found) {
@@ -1127,254 +1102,6 @@ static void validate_node(const schema_node_ptr& node,
   }
 }
 
-// --- Fast validation (no error details, just valid/invalid) ---
-// Avoids string allocations for path building and error messages.
-// Used as fast-path: if this returns true, skip full validation.
-
-static bool validate_fast(const schema_node* node,
-                          dom::element value,
-                          const compiled_schema& ctx) {
-  if (!node) return true;
-
-  if (node->boolean_schema.has_value())
-    return node->boolean_schema.value();
-
-  if (!node->ref.empty()) {
-    auto it = ctx.defs.find(node->ref);
-    if (it != ctx.defs.end())
-      return validate_fast(it->second.get(), value, ctx);
-    if (node->ref == "#" && ctx.root)
-      return validate_fast(ctx.root.get(), value, ctx);
-    return false;
-  }
-
-  auto t = type_of_sv(value);
-
-  // type check
-  if (!node->types.empty()) {
-    bool match = false;
-    for (const auto& ty : node->types) {
-      if (t == ty || (ty == "number" && (t == "integer" || t == "number"))) {
-        match = true;
-        break;
-      }
-    }
-    if (!match) return false;
-  }
-
-  // enum — fast paths for common types to avoid minify()
-  if (!node->enum_values_minified.empty()) {
-    bool found = false;
-    if (value.is<std::string_view>()) {
-      std::string_view sv;
-      value.get(sv);
-      for (const auto& ev : node->enum_values_minified) {
-        if (ev.size() == sv.size() + 2 && ev.front() == '"' &&
-            ev.back() == '"' && ev.compare(1, sv.size(), sv) == 0) {
-          found = true; break;
-        }
-      }
-    } else if (value.is<int64_t>()) {
-      int64_t v; value.get(v);
-      auto s = std::to_string(v);
-      for (const auto& ev : node->enum_values_minified) {
-        if (ev == s) { found = true; break; }
-      }
-    } else if (value.is<bool>()) {
-      bool v; value.get(v);
-      auto s = v ? "true" : "false";
-      for (const auto& ev : node->enum_values_minified) {
-        if (ev == s) { found = true; break; }
-      }
-    } else {
-      std::string val_str = std::string(minify(value));
-      for (const auto& ev : node->enum_values_minified) {
-        if (ev == val_str) { found = true; break; }
-      }
-    }
-    if (!found) return false;
-  }
-
-  // const
-  if (node->const_value_raw.has_value()) {
-    if (std::string(minify(value)) != node->const_value_raw.value())
-      return false;
-  }
-
-  // numeric
-  if (t == "integer" || t == "number") {
-    double v = to_double(value);
-    if (node->minimum.has_value() && v < *node->minimum) return false;
-    if (node->maximum.has_value() && v > *node->maximum) return false;
-    if (node->exclusive_minimum.has_value() && v <= *node->exclusive_minimum)
-      return false;
-    if (node->exclusive_maximum.has_value() && v >= *node->exclusive_maximum)
-      return false;
-    if (node->multiple_of.has_value()) {
-      double d = *node->multiple_of;
-      double rem = std::fmod(v, d);
-      if (std::abs(rem) > 1e-8 && std::abs(rem - d) > 1e-8) return false;
-    }
-  }
-
-  // string
-  if (t == "string") {
-    std::string_view sv;
-    value.get(sv);
-    uint64_t len = utf8_length(sv);
-    if (node->min_length.has_value() && len < *node->min_length) return false;
-    if (node->max_length.has_value() && len > *node->max_length) return false;
-    if (node->compiled_pattern &&
-        !std::regex_search(sv.begin(), sv.end(), *node->compiled_pattern))
-      return false;
-    if (node->format.has_value() && !check_format(sv, *node->format))
-      return false;
-  }
-
-  // array — single-pass validation
-  if (t == "array" && value.is<dom::array>()) {
-    dom::array arr;
-    value.get(arr);
-    bool need_unique = node->unique_items;
-    bool need_contains = node->contains_schema != nullptr;
-    std::set<std::string> seen;
-    uint64_t sz = 0, contains_mc = 0;
-
-    for (auto item : arr) {
-      // items/prefixItems validation
-      if (sz < node->prefix_items.size()) {
-        if (!validate_fast(node->prefix_items[sz].get(), item, ctx))
-          return false;
-      } else if (node->items_schema) {
-        if (!validate_fast(node->items_schema.get(), item, ctx))
-          return false;
-      }
-      // uniqueItems
-      if (need_unique) {
-        if (!seen.insert(std::string(minify(item))).second) return false;
-      }
-      // contains
-      if (need_contains) {
-        if (validate_fast(node->contains_schema.get(), item, ctx))
-          ++contains_mc;
-      }
-      ++sz;
-    }
-    if (node->min_items.has_value() && sz < *node->min_items) return false;
-    if (node->max_items.has_value() && sz > *node->max_items) return false;
-    if (need_contains) {
-      if (contains_mc < node->min_contains.value_or(1)) return false;
-      if (contains_mc > node->max_contains.value_or(sz)) return false;
-    }
-  }
-
-  // object — single-pass validation
-  if (t == "object" && value.is<dom::object>()) {
-    dom::object obj;
-    value.get(obj);
-    // Check required first (fast — simdjson hash lookup)
-    for (const auto& req : node->required) {
-      dom::element dummy;
-      if (obj[req].get(dummy) != SUCCESS) return false;
-    }
-    // Validate properties + count in single pass
-    uint64_t pc = 0;
-    for (auto [key, val] : obj) {
-      ++pc;
-      std::string_view key_sv(key);
-      std::string key_str(key_sv);
-      bool matched = false;
-      auto it = node->properties.find(key_str);
-      if (it != node->properties.end()) {
-        if (!validate_fast(it->second.get(), val, ctx)) return false;
-        matched = true;
-      }
-      for (const auto& pp : node->pattern_properties) {
-        if (pp.compiled && std::regex_search(key_str, *pp.compiled)) {
-          if (!validate_fast(pp.schema.get(), val, ctx)) return false;
-          matched = true;
-        }
-      }
-      if (!matched) {
-        if (node->additional_properties_bool.has_value() &&
-            !*node->additional_properties_bool)
-          return false;
-        if (node->additional_properties_schema &&
-            !validate_fast(node->additional_properties_schema.get(), val, ctx))
-          return false;
-      }
-    }
-    if (node->min_properties.has_value() && pc < *node->min_properties)
-      return false;
-    if (node->max_properties.has_value() && pc > *node->max_properties)
-      return false;
-    if (node->property_names_schema) {
-      for (auto [key, val] : obj) {
-        std::string kj = "\"" + std::string(key) + "\"";
-        dom::parser kp;
-        auto kr = kp.parse(kj);
-        if (!kr.error() &&
-            !validate_fast(node->property_names_schema.get(), kr.value(), ctx))
-          return false;
-      }
-    }
-    for (const auto& [prop, deps] : node->dependent_required) {
-      dom::element dummy;
-      if (obj[prop].get(dummy) == SUCCESS) {
-        for (const auto& dep : deps) {
-          dom::element d2;
-          if (obj[dep].get(d2) != SUCCESS) return false;
-        }
-      }
-    }
-    for (const auto& [prop, schema] : node->dependent_schemas) {
-      dom::element dummy;
-      if (obj[prop].get(dummy) == SUCCESS) {
-        if (!validate_fast(schema.get(), value, ctx)) return false;
-      }
-    }
-  }
-
-  // allOf
-  for (const auto& sub : node->all_of) {
-    if (!validate_fast(sub.get(), value, ctx)) return false;
-  }
-  // anyOf
-  if (!node->any_of.empty()) {
-    bool any = false;
-    for (const auto& sub : node->any_of) {
-      if (validate_fast(sub.get(), value, ctx)) { any = true; break; }
-    }
-    if (!any) return false;
-  }
-  // oneOf
-  if (!node->one_of.empty()) {
-    int mc = 0;
-    for (const auto& sub : node->one_of) {
-      if (validate_fast(sub.get(), value, ctx)) ++mc;
-    }
-    if (mc != 1) return false;
-  }
-  // not
-  if (node->not_schema) {
-    if (validate_fast(node->not_schema.get(), value, ctx)) return false;
-  }
-  // if/then/else
-  if (node->if_schema) {
-    if (validate_fast(node->if_schema.get(), value, ctx)) {
-      if (node->then_schema &&
-          !validate_fast(node->then_schema.get(), value, ctx))
-        return false;
-    } else {
-      if (node->else_schema &&
-          !validate_fast(node->else_schema.get(), value, ctx))
-        return false;
-    }
-  }
-
-  return true;
-}
-
 schema_ref compile(std::string_view schema_json) {
   auto ctx = std::make_shared<compiled_schema>();
   ctx->raw_schema = std::string(schema_json);
@@ -1406,17 +1133,10 @@ validation_result validate(const schema_ref& schema, std::string_view json,
     return {false, {{error_code::invalid_json, "", "invalid JSON document"}}};
   }
 
-  // Fast path: if valid, return immediately without building error details
-  if (validate_fast(schema.impl->root.get(), result.value(), *schema.impl)) {
-    return {true, {}};
-  }
-
-  // Slow path: re-validate to collect error details
-  // Re-parse because DOM iterators may be consumed
-  auto result2 = doc_parser.parse(padded);
+  // Fast path: validate without building error details
   std::vector<validation_error> errors;
-  validate_node(schema.impl->root, result2.value(), "", *schema.impl, errors,
-                opts.all_errors);
+  validate_node(schema.impl->root, result.value(), "", *schema.impl, errors,
+                false);  // all_errors=false for fast early termination
 
   return {errors.empty(), std::move(errors)};
 }
