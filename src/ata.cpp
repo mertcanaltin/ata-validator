@@ -281,7 +281,9 @@ struct compiled_schema {
   std::string raw_schema;
   dom::parser parser;
   dom::parser doc_parser;
+  simdjson::ondemand::parser od_parser;  // On Demand parser for fast path
   cg::plan gen_plan;  // codegen validation plan
+  bool use_ondemand = false;  // true if codegen plan supports On Demand
 };
 
 // --- Schema compilation ---
@@ -1366,6 +1368,155 @@ static bool cg_exec(const cg::plan& p, const std::vector<cg::ins>& code,
   return true;
 }
 
+// --- On Demand fast path executor ---
+// Uses simdjson On Demand API to avoid materializing the full DOM tree.
+// Returns: true = valid, false = invalid OR unsupported (fallback to DOM).
+
+static std::string_view od_type(simdjson::ondemand::value& v) {
+  switch (v.type()) {
+    case simdjson::ondemand::json_type::object: return "object";
+    case simdjson::ondemand::json_type::array: return "array";
+    case simdjson::ondemand::json_type::string: return "string";
+    case simdjson::ondemand::json_type::boolean: return "boolean";
+    case simdjson::ondemand::json_type::null: return "null";
+    case simdjson::ondemand::json_type::number: {
+      simdjson::ondemand::number_type nt;
+      if (v.get_number_type().get(nt) == SUCCESS &&
+          nt == simdjson::ondemand::number_type::floating_point_number)
+        return "number";
+      return "integer";
+    }
+  }
+  return "unknown";
+}
+
+static bool od_exec(const cg::plan& p, const std::vector<cg::ins>& code,
+                     simdjson::ondemand::value value) {
+  auto t = od_type(value);
+  for (size_t i = 0; i < code.size(); ++i) {
+    auto& c = code[i];
+    switch (c.o) {
+    case cg::op::END: return true;
+    case cg::op::EXPECT_OBJECT: if(t!="object") return false; break;
+    case cg::op::EXPECT_ARRAY: if(t!="array") return false; break;
+    case cg::op::EXPECT_STRING: if(t!="string") return false; break;
+    case cg::op::EXPECT_NUMBER: if(t!="number"&&t!="integer") return false; break;
+    case cg::op::EXPECT_INTEGER: if(t!="integer") return false; break;
+    case cg::op::EXPECT_BOOLEAN: if(t!="boolean") return false; break;
+    case cg::op::EXPECT_NULL: if(t!="null") return false; break;
+    case cg::op::EXPECT_TYPE_MULTI: {
+      auto& ts=p.type_sets[c.a]; bool m=false;
+      for(auto& ty:ts){if(t==ty||(ty=="number"&&(t=="integer"||t=="number"))){m=true;break;}}
+      if(!m) return false; break;
+    }
+    case cg::op::CHECK_MINIMUM:
+    case cg::op::CHECK_MAXIMUM:
+    case cg::op::CHECK_EX_MINIMUM:
+    case cg::op::CHECK_EX_MAXIMUM:
+    case cg::op::CHECK_MULTIPLE_OF: {
+      if (t=="integer"||t=="number") {
+        double v;
+        if (t=="integer") { int64_t iv; if(value.get(iv)!=SUCCESS) return false; v=(double)iv; }
+        else { if(value.get(v)!=SUCCESS) return false; }
+        double d=p.doubles[c.a];
+        if(c.o==cg::op::CHECK_MINIMUM && v<d) return false;
+        if(c.o==cg::op::CHECK_MAXIMUM && v>d) return false;
+        if(c.o==cg::op::CHECK_EX_MINIMUM && v<=d) return false;
+        if(c.o==cg::op::CHECK_EX_MAXIMUM && v>=d) return false;
+        if(c.o==cg::op::CHECK_MULTIPLE_OF){double r=std::fmod(v,d);if(std::abs(r)>1e-8&&std::abs(r-d)>1e-8)return false;}
+      }
+      break;
+    }
+    case cg::op::CHECK_MIN_LENGTH: if(t=="string"){std::string_view sv; if(value.get(sv)!=SUCCESS) return false; if(utf8_length(sv)<c.a) return false;} break;
+    case cg::op::CHECK_MAX_LENGTH: if(t=="string"){std::string_view sv; if(value.get(sv)!=SUCCESS) return false; if(utf8_length(sv)>c.a) return false;} break;
+    case cg::op::CHECK_PATTERN: if(t=="string"){std::string_view sv; if(value.get(sv)!=SUCCESS) return false; if(!re2::RE2::PartialMatch(re2::StringPiece(sv.data(),sv.size()),*p.regexes[c.a]))return false;} break;
+    case cg::op::CHECK_FORMAT: if(t=="string"){std::string_view sv; if(value.get(sv)!=SUCCESS) return false; uint8_t f=p.format_ids[c.a]; if(f<9&&!check_format(sv,fmt_names[f]))return false;} break;
+    case cg::op::CHECK_MIN_ITEMS: if(t=="array"){
+      simdjson::ondemand::array a; if(value.get(a)!=SUCCESS) return false;
+      uint64_t s=0; for(auto x:a){(void)x;++s;} if(s<c.a) return false;
+    } break;
+    case cg::op::CHECK_MAX_ITEMS: if(t=="array"){
+      simdjson::ondemand::array a; if(value.get(a)!=SUCCESS) return false;
+      uint64_t s=0; for(auto x:a){(void)x;++s;} if(s>c.a) return false;
+    } break;
+    case cg::op::ARRAY_ITEMS: if(t=="array"){
+      simdjson::ondemand::array a; if(value.get(a)!=SUCCESS) return false;
+      for(auto elem:a){
+        simdjson::ondemand::value v; if(elem.get(v)!=SUCCESS) return false;
+        if(!od_exec(p,p.subs[c.a],v)) return false;
+      }
+    } break;
+    case cg::op::CHECK_REQUIRED: if(t=="object"){
+      simdjson::ondemand::object o; if(value.get(o)!=SUCCESS) return false;
+      auto f = o.find_field_unordered(p.strings[c.a]);
+      if(f.error()) return false;
+    } break;
+    case cg::op::CHECK_MIN_PROPS: if(t=="object"){
+      simdjson::ondemand::object o; if(value.get(o)!=SUCCESS) return false;
+      uint64_t n=0; for(auto f:o){(void)f;++n;} if(n<c.a) return false;
+    } break;
+    case cg::op::CHECK_MAX_PROPS: if(t=="object"){
+      simdjson::ondemand::object o; if(value.get(o)!=SUCCESS) return false;
+      uint64_t n=0; for(auto f:o){(void)f;++n;} if(n>c.a) return false;
+    } break;
+    case cg::op::OBJ_PROPS_START: if(t=="object"){
+      simdjson::ondemand::object o; if(value.get(o)!=SUCCESS) return false;
+      struct pd{std::string_view nm;uint32_t si;};
+      std::vector<pd> props; bool no_add=false;
+      size_t j=i+1;
+      for(;j<code.size()&&code[j].o!=cg::op::OBJ_PROPS_END;++j){
+        if(code[j].o==cg::op::OBJ_PROP) props.push_back({p.strings[code[j].a],code[j].b});
+        else if(code[j].o==cg::op::CHECK_NO_ADDITIONAL) no_add=true;
+      }
+      for(auto field:o){
+        simdjson::ondemand::raw_json_string rk; if(field.key().get(rk)!=SUCCESS) return false;
+        std::string_view key = field.unescaped_key();
+        bool matched=false;
+        for(auto& pp:props){
+          if(key==pp.nm){
+            simdjson::ondemand::value fv; if(field.value().get(fv)!=SUCCESS) return false;
+            if(!od_exec(p,p.subs[pp.si],fv)) return false;
+            matched=true; break;
+          }
+        }
+        if(!matched&&no_add) return false;
+      }
+      i=j; break;
+    } else { size_t j=i+1; for(;j<code.size()&&code[j].o!=cg::op::OBJ_PROPS_END;++j); i=j; } break;
+    case cg::op::OBJ_PROP: case cg::op::OBJ_PROPS_END: case cg::op::CHECK_NO_ADDITIONAL: break;
+
+    // These require full materialization — bail to DOM path
+    case cg::op::CHECK_UNIQUE_ITEMS:
+    case cg::op::CHECK_ENUM_STR:
+    case cg::op::CHECK_ENUM:
+    case cg::op::CHECK_CONST:
+    case cg::op::COMPOSITION:
+      return false;
+    }
+  }
+  return true;
+}
+
+// Determine if a codegen plan can use On Demand (no enum/const/uniqueItems)
+static bool plan_supports_ondemand(const cg::plan& p) {
+  for (auto& c : p.code) {
+    if (c.o == cg::op::CHECK_UNIQUE_ITEMS || c.o == cg::op::CHECK_ENUM_STR ||
+        c.o == cg::op::CHECK_ENUM || c.o == cg::op::CHECK_CONST ||
+        c.o == cg::op::COMPOSITION)
+      return false;
+  }
+  // Also check sub-plans
+  for (auto& sub : p.subs) {
+    for (auto& c : sub) {
+      if (c.o == cg::op::CHECK_UNIQUE_ITEMS || c.o == cg::op::CHECK_ENUM_STR ||
+          c.o == cg::op::CHECK_ENUM || c.o == cg::op::CHECK_CONST ||
+          c.o == cg::op::COMPOSITION)
+        return false;
+    }
+  }
+  return true;
+}
+
 schema_ref compile(std::string_view schema_json) {
   auto ctx = std::make_shared<compiled_schema>();
   ctx->raw_schema = std::string(schema_json);
@@ -1382,6 +1533,7 @@ schema_ref compile(std::string_view schema_json) {
   // Generate codegen plan
   cg_compile(ctx->root.get(), ctx->gen_plan, ctx->gen_plan.code);
   ctx->gen_plan.code.push_back({cg::op::END});
+  ctx->use_ondemand = plan_supports_ondemand(ctx->gen_plan);
 
   schema_ref ref;
   ref.impl = ctx;
@@ -1395,13 +1547,31 @@ validation_result validate(const schema_ref& schema, std::string_view json,
   }
 
   auto padded = simdjson::padded_string(json);
+
+  // Ultra-fast path: On Demand (no DOM materialization)
+  // Only beneficial for larger documents where DOM materialization cost dominates
+  static constexpr size_t OD_THRESHOLD = 32;
+  if (schema.impl->use_ondemand && !schema.impl->gen_plan.code.empty() &&
+      json.size() >= OD_THRESHOLD) {
+    auto od_result = schema.impl->od_parser.iterate(padded);
+    if (!od_result.error()) {
+      simdjson::ondemand::value root_val;
+      if (od_result.get_value().get(root_val) == SUCCESS) {
+        if (od_exec(schema.impl->gen_plan, schema.impl->gen_plan.code, root_val)) {
+          return {true, {}};
+        }
+      }
+    }
+    // On Demand said invalid — fall through to DOM for error details
+  }
+
   auto result = schema.impl->doc_parser.parse(padded);
   if (result.error()) {
     return {false, {{error_code::invalid_json, "", "invalid JSON document"}}};
   }
 
-  // Fast path: codegen bytecode execution
-  if (!schema.impl->gen_plan.code.empty()) {
+  // Fast path: codegen bytecode execution (DOM)
+  if (!schema.impl->use_ondemand && !schema.impl->gen_plan.code.empty()) {
     if (cg_exec(schema.impl->gen_plan, schema.impl->gen_plan.code,
                 result.value())) {
       return {true, {}};
