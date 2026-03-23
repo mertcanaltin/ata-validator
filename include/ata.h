@@ -86,4 +86,12 @@ validation_result validate(std::string_view schema_json,
                            std::string_view json,
                            const validate_options& opts = {});
 
+// Ultra-fast boolean validation — no error collection, no allocation.
+// Input MUST have at least 64 bytes of padding after data (simdjson requirement).
+// Use this when you only need true/false and can provide pre-padded input.
+bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t length);
+
+// Required padding size for is_valid_prepadded
+inline constexpr size_t REQUIRED_PADDING = 64;
+
 }  // namespace ata

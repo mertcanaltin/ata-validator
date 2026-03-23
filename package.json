@@ -1,7 +1,7 @@
 {
   "name": "ata-validator",
-  "version": "0.1.0",
-  "description": "Ultra-fast JSON Schema validator powered by simdjson. 11,000x faster schema compilation, 2-4x faster validation than ajv.",
+  "version": "0.2.0",
+  "description": "Ultra-fast JSON Schema validator powered by simdjson, RE2, and codegen bytecode engine. 120x faster schema compilation, 98.6% spec compliant, Standard Schema V1 compatible.",
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
@@ -39,7 +39,7 @@
   "bugs": {
     "url": "https://github.com/mertcanaltin/ata-validator/issues"
   },
-  "homepage": "https://github.com/mertcanaltin/ata#readme",
+  "homepage": "https://ata-validator.com",
   "engines": {
     "node": ">=18.0.0"
   },

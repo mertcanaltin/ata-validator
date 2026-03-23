@@ -1598,4 +1598,23 @@ validation_result validate(std::string_view schema_json,
   return validate(s, json, opts);
 }
 
+bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t length) {
+  if (!schema.impl || !schema.impl->root) return false;
+
+  // Zero-copy DOM parse via padded_string_view (no memcpy)
+  simdjson::padded_string_view psv(data, length, length + REQUIRED_PADDING);
+  auto result = schema.impl->doc_parser.parse(psv);
+  if (result.error()) return false;
+
+  // Codegen fast path
+  if (!schema.impl->gen_plan.code.empty()) {
+    return cg_exec(schema.impl->gen_plan, schema.impl->gen_plan.code, result.value());
+  }
+
+  // Tree walker (no error collection)
+  std::vector<validation_error> errors;
+  validate_node(schema.impl->root, result.value(), "", *schema.impl, errors, false);
+  return errors.empty();
+}
+
 }  // namespace ata

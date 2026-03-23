@@ -1,6 +1,14 @@
 #include <napi.h>
+#include <node_api.h>
 
 #include <cmath>
+#include <thread>
+#include <future>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <queue>
+#include <atomic>
 #include <re2/re2.h>
 #include <set>
 #include <string>
@@ -836,12 +844,26 @@ class CompiledSchema : public Napi::ObjectWrap<CompiledSchema> {
   // Validate via JSON string (simdjson parse path)
   Napi::Value ValidateJSON(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (info.Length() < 1 || !info[0].IsString()) {
+    if (info.Length() < 1) {
       Napi::TypeError::New(env, "JSON string expected")
           .ThrowAsJavaScriptException();
       return env.Undefined();
     }
-    std::string json = info[0].As<Napi::String>().Utf8Value();
+    // Support Buffer for zero-copy
+    if (info[0].IsBuffer()) {
+      auto buf = info[0].As<Napi::Buffer<char>>();
+      auto result = ata::validate(schema_, std::string_view(buf.Data(), buf.Length()));
+      return make_result(env, result);
+    }
+    if (!info[0].IsString()) {
+      Napi::TypeError::New(env, "JSON string or Buffer expected")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    size_t len = 0;
+    napi_get_value_string_utf8(env, info[0], nullptr, 0, &len);
+    std::string json(len, '\0');
+    napi_get_value_string_utf8(env, info[0], json.data(), len + 1, &len);
     auto result = ata::validate(schema_, json);
     return make_result(env, result);
   }
@@ -849,10 +871,24 @@ class CompiledSchema : public Napi::ObjectWrap<CompiledSchema> {
   // Fast boolean-only validation — no error object creation
   Napi::Value IsValidJSON(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (info.Length() < 1 || !info[0].IsString()) {
+    if (info.Length() < 1) {
       return Napi::Boolean::New(env, false);
     }
-    std::string json = info[0].As<Napi::String>().Utf8Value();
+    // Support both String and Buffer inputs
+    if (info[0].IsBuffer()) {
+      auto buf = info[0].As<Napi::Buffer<char>>();
+      auto result = ata::validate(schema_, std::string_view(buf.Data(), buf.Length()));
+      return Napi::Boolean::New(env, result.valid);
+    }
+    if (!info[0].IsString()) {
+      return Napi::Boolean::New(env, false);
+    }
+    // Use napi_get_value_string_utf8 to get length first, then read directly
+    size_t len = 0;
+    napi_get_value_string_utf8(env, info[0], nullptr, 0, &len);
+    // Allocate padded buffer for simdjson (needs SIMDJSON_PADDING)
+    std::string json(len, '\0');
+    napi_get_value_string_utf8(env, info[0], json.data(), len + 1, &len);
     auto result = ata::validate(schema_, json);
     return Napi::Boolean::New(env, result.valid);
   }
@@ -920,10 +956,567 @@ Napi::Value GetVersion(const Napi::CallbackInfo& info) {
   return Napi::String::New(info.Env(), std::string(ata::version()));
 }
 
+// --- Thread Pool ---
+class ThreadPool {
+public:
+  ThreadPool() {
+    unsigned n = std::thread::hardware_concurrency();
+    if (n == 0) n = 4;
+    for (unsigned i = 0; i < n; i++) {
+      workers_.emplace_back([this] {
+        // Each thread gets its own schema cache
+        std::unordered_map<uint32_t, ata::schema_ref> cache;
+        while (true) {
+          std::function<void(std::unordered_map<uint32_t, ata::schema_ref>&)> task;
+          {
+            std::unique_lock<std::mutex> lock(mtx_);
+            cv_.wait(lock, [this] { return stop_ || !tasks_.empty(); });
+            if (stop_ && tasks_.empty()) return;
+            task = std::move(tasks_.front());
+            tasks_.pop();
+          }
+          task(cache);
+          {
+            std::unique_lock<std::mutex> lock(done_mtx_);
+            pending_--;
+            if (pending_ == 0) done_cv_.notify_all();
+          }
+        }
+      });
+    }
+  }
+
+  void submit(std::function<void(std::unordered_map<uint32_t, ata::schema_ref>&)> task) {
+    {
+      std::unique_lock<std::mutex> lock(mtx_);
+      tasks_.push(std::move(task));
+    }
+    {
+      std::unique_lock<std::mutex> lock(done_mtx_);
+      pending_++;
+    }
+    cv_.notify_one();
+  }
+
+  void wait() {
+    std::unique_lock<std::mutex> lock(done_mtx_);
+    done_cv_.wait(lock, [this] { return pending_ == 0; });
+  }
+
+  unsigned size() const { return (unsigned)workers_.size(); }
+
+  ~ThreadPool() {
+    { std::unique_lock<std::mutex> lock(mtx_); stop_ = true; }
+    cv_.notify_all();
+    for (auto& w : workers_) w.join();
+  }
+
+private:
+  std::vector<std::thread> workers_;
+  std::queue<std::function<void(std::unordered_map<uint32_t, ata::schema_ref>&)>> tasks_;
+  std::mutex mtx_;
+  std::condition_variable cv_;
+  std::mutex done_mtx_;
+  std::condition_variable done_cv_;
+  std::atomic<int> pending_{0};
+  bool stop_ = false;
+};
+
+static ThreadPool& pool() {
+  static ThreadPool p;
+  return p;
+}
+
+// --- Fast Validation Registry ---
+// Global schema slots for V8 Fast API (bypasses NAPI overhead)
+static constexpr size_t MAX_FAST_SLOTS = 256;
+static ata::schema_ref g_fast_schemas[MAX_FAST_SLOTS];
+static std::string g_fast_schema_jsons[MAX_FAST_SLOTS];
+static uint32_t g_fast_slot_count = 0;
+
+// Register a compiled schema in a fast slot, returns slot ID
+Napi::Value FastRegister(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsString()) {
+    Napi::TypeError::New(env, "Schema JSON string expected").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (g_fast_slot_count >= MAX_FAST_SLOTS) {
+    Napi::Error::New(env, "Max fast schema slots reached").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  std::string schema_json = info[0].As<Napi::String>().Utf8Value();
+  auto schema = ata::compile(schema_json);
+  if (!schema) {
+    Napi::Error::New(env, "Failed to compile schema").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  uint32_t slot = g_fast_slot_count++;
+  g_fast_schemas[slot] = std::move(schema);
+  g_fast_schema_jsons[slot] = schema_json;
+  return Napi::Number::New(env, slot);
+}
+
+// Fast validation: slot + Uint8Array → bool (called via V8 Fast API)
+static bool FastValidateImpl(uint32_t slot, const uint8_t* data, size_t length) {
+  if (slot >= g_fast_slot_count) return false;
+  auto result = ata::validate(g_fast_schemas[slot],
+                               std::string_view(reinterpret_cast<const char*>(data), length));
+  return result.valid;
+}
+
+// Zero-copy validation with pre-padded buffer
+static bool FastValidatePrepadded(uint32_t slot, const uint8_t* data, size_t length) {
+  if (slot >= g_fast_slot_count) return false;
+  return ata::is_valid_prepadded(g_fast_schemas[slot],
+                                  reinterpret_cast<const char*>(data), length);
+}
+
+// Slow path (NAPI) — called when V8 can't use fast path
+Napi::Value FastValidateSlow(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsNumber()) {
+    return Napi::Boolean::New(env, false);
+  }
+  uint32_t slot = info[0].As<Napi::Number>().Uint32Value();
+  if (info[1].IsTypedArray()) {
+    auto arr = info[1].As<Napi::TypedArray>();
+    if (arr.TypedArrayType() == napi_uint8_array) {
+      auto u8 = info[1].As<Napi::Uint8Array>();
+      bool ok = FastValidateImpl(slot, u8.Data(), u8.ByteLength());
+      return Napi::Boolean::New(env, ok);
+    }
+  }
+  if (info[1].IsBuffer()) {
+    auto buf = info[1].As<Napi::Buffer<uint8_t>>();
+    bool ok = FastValidateImpl(slot, buf.Data(), buf.Length());
+    return Napi::Boolean::New(env, ok);
+  }
+  if (info[1].IsString()) {
+    std::string json = info[1].As<Napi::String>().Utf8Value();
+    bool ok = FastValidateImpl(slot, reinterpret_cast<const uint8_t*>(json.data()), json.size());
+    return Napi::Boolean::New(env, ok);
+  }
+  return Napi::Boolean::New(env, false);
+}
+
+// --- Raw NAPI fast path (minimal overhead) ---
+static napi_value RawFastValidate(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+  if (argc < 2) {
+    napi_value result;
+    napi_get_boolean(env, false, &result);
+    return result;
+  }
+
+  uint32_t slot;
+  napi_get_value_uint32(env, args[0], &slot);
+
+  // Check if pre-padded mode (3rd arg = json length, buffer has padding)
+  bool prepadded = (argc >= 3);
+  uint32_t json_length = 0;
+  if (prepadded) {
+    napi_get_value_uint32(env, args[2], &json_length);
+  }
+
+  bool valid = false;
+
+  // Try typed array first (zero-copy)
+  bool is_typedarray = false;
+  napi_is_typedarray(env, args[1], &is_typedarray);
+
+  if (is_typedarray) {
+    napi_typedarray_type type;
+    size_t length;
+    void* data;
+    napi_get_typedarray_info(env, args[1], &type, &length, &data, nullptr, nullptr);
+    if (data) {
+      size_t actual_len = prepadded ? json_length : length;
+      if (prepadded) {
+        valid = FastValidatePrepadded(slot, static_cast<const uint8_t*>(data), actual_len);
+      } else {
+        valid = FastValidateImpl(slot, static_cast<const uint8_t*>(data), actual_len);
+      }
+    }
+  } else {
+    bool is_buffer = false;
+    napi_is_buffer(env, args[1], &is_buffer);
+    if (is_buffer) {
+      void* data;
+      size_t length;
+      napi_get_buffer_info(env, args[1], &data, &length);
+      if (data) {
+        size_t actual_len = prepadded ? json_length : length;
+        if (prepadded) {
+          valid = FastValidatePrepadded(slot, static_cast<const uint8_t*>(data), actual_len);
+        } else {
+          valid = FastValidateImpl(slot, static_cast<const uint8_t*>(data), actual_len);
+        }
+      }
+    } else {
+      // String — must copy (can't pre-pad strings)
+      size_t len;
+      napi_get_value_string_utf8(env, args[1], nullptr, 0, &len);
+      if (len <= 4096) {
+        char buf[4097];
+        napi_get_value_string_utf8(env, args[1], buf, len + 1, &len);
+        valid = FastValidateImpl(slot, reinterpret_cast<const uint8_t*>(buf), len);
+      } else {
+        std::string buf(len, '\0');
+        napi_get_value_string_utf8(env, args[1], buf.data(), len + 1, &len);
+        valid = FastValidateImpl(slot, reinterpret_cast<const uint8_t*>(buf.data()), len);
+      }
+    }
+  }
+
+  napi_value result;
+  napi_get_boolean(env, valid, &result);
+  return result;
+}
+
+// --- Batch validation: one NAPI call, N validations ---
+static napi_value RawBatchValidate(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+  uint32_t slot;
+  napi_get_value_uint32(env, args[0], &slot);
+  if (slot >= g_fast_slot_count) {
+    napi_value r;
+    napi_get_null(env, &r);
+    return r;
+  }
+
+  uint32_t arr_len;
+  napi_get_array_length(env, args[1], &arr_len);
+
+  napi_value result_arr;
+  napi_create_array_with_length(env, arr_len, &result_arr);
+
+  for (uint32_t i = 0; i < arr_len; i++) {
+    napi_value item;
+    napi_get_element(env, args[1], i, &item);
+
+    bool valid = false;
+    bool is_buffer = false;
+    napi_is_buffer(env, item, &is_buffer);
+
+    if (is_buffer) {
+      void* data; size_t length;
+      napi_get_buffer_info(env, item, &data, &length);
+      if (data && length > 0)
+        valid = ata::validate(g_fast_schemas[slot],
+                  std::string_view(static_cast<const char*>(data), length)).valid;
+    } else {
+      bool is_ta = false;
+      napi_is_typedarray(env, item, &is_ta);
+      if (is_ta) {
+        napi_typedarray_type type; size_t length; void* data;
+        napi_get_typedarray_info(env, item, &type, &length, &data, nullptr, nullptr);
+        if (data && length > 0)
+          valid = ata::validate(g_fast_schemas[slot],
+                    std::string_view(static_cast<const char*>(data), length)).valid;
+      } else {
+        size_t len;
+        napi_get_value_string_utf8(env, item, nullptr, 0, &len);
+        std::string buf(len, '\0');
+        napi_get_value_string_utf8(env, item, buf.data(), len + 1, &len);
+        valid = ata::validate(g_fast_schemas[slot], buf).valid;
+      }
+    }
+
+    napi_value bval;
+    napi_get_boolean(env, valid, &bval);
+    napi_set_element(env, result_arr, i, bval);
+  }
+  return result_arr;
+}
+
+// --- Parallel NDJSON: multi-core validation, ajv can't do this ---
+static napi_value RawParallelValidate(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+  uint32_t slot;
+  napi_get_value_uint32(env, args[0], &slot);
+  if (slot >= g_fast_slot_count) {
+    napi_value r; napi_get_null(env, &r); return r;
+  }
+
+  const char* data = nullptr;
+  size_t total_len = 0;
+  bool is_buffer = false;
+  napi_is_buffer(env, args[1], &is_buffer);
+  if (is_buffer) {
+    void* d; napi_get_buffer_info(env, args[1], &d, &total_len);
+    data = static_cast<const char*>(d);
+  } else {
+    bool is_ta = false;
+    napi_is_typedarray(env, args[1], &is_ta);
+    if (is_ta) {
+      napi_typedarray_type type; void* d;
+      napi_get_typedarray_info(env, args[1], &type, &total_len, &d, nullptr, nullptr);
+      data = static_cast<const char*>(d);
+    }
+  }
+  if (!data || total_len == 0) {
+    napi_value r; napi_create_array_with_length(env, 0, &r); return r;
+  }
+
+  // Split lines
+  struct line { const char* ptr; size_t len; };
+  std::vector<line> lines;
+  const char* start = data;
+  const char* end = data + total_len;
+  while (start < end) {
+    const char* nl = static_cast<const char*>(memchr(start, '\n', end - start));
+    size_t line_len = nl ? (size_t)(nl - start) : (size_t)(end - start);
+    if (line_len > 0) lines.push_back({start, line_len});
+    start += line_len + 1;
+  }
+
+  size_t n = lines.size();
+  std::vector<bool> results(n, false);
+
+  // Parallel validation across CPU cores
+  unsigned num_threads = std::thread::hardware_concurrency();
+  if (num_threads == 0) num_threads = 4;
+  if (num_threads > n) num_threads = (unsigned)n;
+
+  // Each thread gets its own schema_ref (thread-safe: compile is one-time, validate is read-only)
+  // But ata::validate uses internal parser that's NOT thread-safe
+  // So each thread needs its own compiled schema
+  const auto& schema_json = g_fast_schema_jsons[slot];
+
+  if (schema_json.empty() || n < num_threads * 2) {
+    // Fallback: single-threaded for small batches
+    for (size_t i = 0; i < n; i++) {
+      auto r = ata::validate(g_fast_schemas[slot], std::string_view(lines[i].ptr, lines[i].len));
+      results[i] = r.valid;
+    }
+  } else {
+    auto& tp = pool();
+    unsigned nworkers = tp.size();
+    size_t chunk = (n + nworkers - 1) / nworkers;
+
+    for (unsigned t = 0; t < nworkers; t++) {
+      size_t from = t * chunk;
+      size_t to = std::min(from + chunk, n);
+      if (from >= n) break;
+
+      tp.submit([&results, &lines, from, to, slot](
+          std::unordered_map<uint32_t, ata::schema_ref>& cache) {
+        auto it = cache.find(slot);
+        if (it == cache.end()) {
+          it = cache.emplace(slot, ata::compile(g_fast_schema_jsons[slot])).first;
+        }
+        auto& s = it->second;
+        // Thread-local reusable padded buffer (no malloc/free per validation)
+        thread_local std::vector<char> tl_buf;
+        for (size_t i = from; i < to; i++) {
+          size_t needed = lines[i].len + 64;
+          if (tl_buf.size() < needed) tl_buf.resize(needed * 2);
+          memcpy(tl_buf.data(), lines[i].ptr, lines[i].len);
+          memset(tl_buf.data() + lines[i].len, 0, 64);
+          results[i] = ata::is_valid_prepadded(s, tl_buf.data(), lines[i].len);
+        }
+      });
+    }
+    tp.wait();
+  }
+
+  napi_value result_arr;
+  napi_create_array_with_length(env, n, &result_arr);
+  for (size_t i = 0; i < n; i++) {
+    napi_value bval;
+    napi_get_boolean(env, results[i], &bval);
+    napi_set_element(env, result_arr, (uint32_t)i, bval);
+  }
+  return result_arr;
+}
+
+// --- Parallel count: returns just the number of valid items (no array overhead) ---
+static napi_value RawParallelCount(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+  uint32_t slot;
+  napi_get_value_uint32(env, args[0], &slot);
+  if (slot >= g_fast_slot_count) {
+    napi_value r; napi_create_uint32(env, 0, &r); return r;
+  }
+
+  const char* data = nullptr;
+  size_t total_len = 0;
+  bool is_buffer = false;
+  napi_is_buffer(env, args[1], &is_buffer);
+  if (is_buffer) {
+    void* d; napi_get_buffer_info(env, args[1], &d, &total_len);
+    data = static_cast<const char*>(d);
+  } else {
+    bool is_ta = false;
+    napi_is_typedarray(env, args[1], &is_ta);
+    if (is_ta) {
+      napi_typedarray_type type; void* d;
+      napi_get_typedarray_info(env, args[1], &type, &total_len, &d, nullptr, nullptr);
+      data = static_cast<const char*>(d);
+    }
+  }
+  if (!data || total_len == 0) {
+    napi_value r; napi_create_uint32(env, 0, &r); return r;
+  }
+
+  struct line { const char* ptr; size_t len; };
+  std::vector<line> lines;
+  const char* start = data;
+  const char* end = data + total_len;
+  while (start < end) {
+    const char* nl = static_cast<const char*>(memchr(start, '\n', end - start));
+    size_t line_len = nl ? (size_t)(nl - start) : (size_t)(end - start);
+    if (line_len > 0) lines.push_back({start, line_len});
+    start += line_len + 1;
+  }
+
+  size_t n = lines.size();
+  std::atomic<uint32_t> valid_count{0};
+
+  auto& tp = pool();
+  unsigned nworkers = tp.size();
+  size_t chunk = (n + nworkers - 1) / nworkers;
+
+  if (n < nworkers * 2) {
+    // Small batch — single thread
+    uint32_t cnt = 0;
+    for (size_t i = 0; i < n; i++) {
+      if (ata::validate(g_fast_schemas[slot], std::string_view(lines[i].ptr, lines[i].len)).valid)
+        cnt++;
+    }
+    napi_value r; napi_create_uint32(env, cnt, &r); return r;
+  }
+
+  for (unsigned t = 0; t < nworkers; t++) {
+    size_t from = t * chunk;
+    size_t to = std::min(from + chunk, n);
+    if (from >= n) break;
+
+    tp.submit([&valid_count, &lines, from, to, slot](
+        std::unordered_map<uint32_t, ata::schema_ref>& cache) {
+      auto it = cache.find(slot);
+      if (it == cache.end()) {
+        it = cache.emplace(slot, ata::compile(g_fast_schema_jsons[slot])).first;
+      }
+      auto& s = it->second;
+      thread_local std::vector<char> tl_buf;
+      uint32_t local_cnt = 0;
+      for (size_t i = from; i < to; i++) {
+        size_t needed = lines[i].len + 64;
+        if (tl_buf.size() < needed) tl_buf.resize(needed * 2);
+        memcpy(tl_buf.data(), lines[i].ptr, lines[i].len);
+        memset(tl_buf.data() + lines[i].len, 0, 64);
+        if (ata::is_valid_prepadded(s, tl_buf.data(), lines[i].len))
+          local_cnt++;
+      }
+      valid_count.fetch_add(local_cnt, std::memory_order_relaxed);
+    });
+  }
+  tp.wait();
+
+  napi_value r;
+  napi_create_uint32(env, valid_count.load(), &r);
+  return r;
+}
+
+// --- NDJSON: single buffer, newline-delimited ---
+static napi_value RawNDJSONValidate(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+  uint32_t slot;
+  napi_get_value_uint32(env, args[0], &slot);
+  if (slot >= g_fast_slot_count) {
+    napi_value r; napi_get_null(env, &r); return r;
+  }
+
+  const char* data = nullptr;
+  size_t total_len = 0;
+  bool is_buffer = false;
+  napi_is_buffer(env, args[1], &is_buffer);
+  if (is_buffer) {
+    void* d; napi_get_buffer_info(env, args[1], &d, &total_len);
+    data = static_cast<const char*>(d);
+  } else {
+    bool is_ta = false;
+    napi_is_typedarray(env, args[1], &is_ta);
+    if (is_ta) {
+      napi_typedarray_type type; void* d;
+      napi_get_typedarray_info(env, args[1], &type, &total_len, &d, nullptr, nullptr);
+      data = static_cast<const char*>(d);
+    }
+  }
+  if (!data || total_len == 0) {
+    napi_value r; napi_create_array_with_length(env, 0, &r); return r;
+  }
+
+  // Count lines first for array allocation
+  uint32_t count = 0;
+  for (size_t i = 0; i < total_len; i++) if (data[i] == '\n') count++;
+  if (total_len > 0 && data[total_len-1] != '\n') count++;
+
+  napi_value result_arr;
+  napi_create_array_with_length(env, count, &result_arr);
+
+  const char* start = data;
+  const char* end = data + total_len;
+  uint32_t idx = 0;
+
+  while (start < end) {
+    const char* nl = static_cast<const char*>(memchr(start, '\n', end - start));
+    size_t line_len = nl ? (size_t)(nl - start) : (size_t)(end - start);
+    if (line_len > 0) {
+      auto r = ata::validate(g_fast_schemas[slot], std::string_view(start, line_len));
+      napi_value bval;
+      napi_get_boolean(env, r.valid, &bval);
+      napi_set_element(env, result_arr, idx++, bval);
+    }
+    start += line_len + 1;
+  }
+  return result_arr;
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   CompiledSchema::Init(env, exports);
   exports.Set("validate", Napi::Function::New(env, ValidateOneShot));
   exports.Set("version", Napi::Function::New(env, GetVersion));
+  exports.Set("fastRegister", Napi::Function::New(env, FastRegister));
+  exports.Set("fastValidate", Napi::Function::New(env, FastValidateSlow));
+
+  napi_value raw_fn;
+  napi_create_function(env, "rawFastValidate", NAPI_AUTO_LENGTH, RawFastValidate, nullptr, &raw_fn);
+  exports.Set("rawFastValidate", Napi::Value(env, raw_fn));
+
+  napi_value batch_fn;
+  napi_create_function(env, "rawBatchValidate", NAPI_AUTO_LENGTH, RawBatchValidate, nullptr, &batch_fn);
+  exports.Set("rawBatchValidate", Napi::Value(env, batch_fn));
+
+  napi_value ndjson_fn;
+  napi_create_function(env, "rawNDJSONValidate", NAPI_AUTO_LENGTH, RawNDJSONValidate, nullptr, &ndjson_fn);
+  exports.Set("rawNDJSONValidate", Napi::Value(env, ndjson_fn));
+
+  napi_value parallel_fn;
+  napi_create_function(env, "rawParallelValidate", NAPI_AUTO_LENGTH, RawParallelValidate, nullptr, &parallel_fn);
+  exports.Set("rawParallelValidate", Napi::Value(env, parallel_fn));
+
+  napi_value pcount_fn;
+  napi_create_function(env, "rawParallelCount", NAPI_AUTO_LENGTH, RawParallelCount, nullptr, &pcount_fn);
+  exports.Set("rawParallelCount", Napi::Value(env, pcount_fn));
+
   return exports;
 }
 
