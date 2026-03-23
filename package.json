@@ -1,7 +1,7 @@
 {
   "name": "ata-validator",
   "version": "0.2.0",
-  "description": "Ultra-fast JSON Schema validator powered by simdjson, RE2, and codegen bytecode engine. 120x faster schema compilation, 98.6% spec compliant, Standard Schema V1 compatible.",
+  "description": "Ultra-fast JSON Schema validator powered by simdjson. 12.5M validations/sec with multi-core parallel validation. 5.9x faster than ajv on batch workloads, 145x faster schema compilation. Standard Schema V1 compatible.",
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
