@@ -26,12 +26,15 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 > ata compiles schemas **145x faster** than ajv.
 
-### Single Call Validation
+### Single Call — JS Object Validation
 
 | Method | ata | ajv | |
 |---|---|---|---|
+| **isValidObject(obj)** | **41M ops/sec** | **19M ops/sec** | **ata 2.2x faster** |
 | isValid(Buffer) | 1.65M ops/sec | 1.77M ops/sec | Nearly equal |
 | validateJSON(string) | 966K ops/sec | 1.77M ops/sec | ajv 1.8x |
+
+> `isValidObject()` uses a JS codegen fast path — no NAPI boundary, runs entirely in V8 JIT.
 
 > Single call overhead is dominated by the NAPI boundary. For batch workloads, ata wins convincingly.
 
@@ -75,20 +78,22 @@ const v = new Validator({
   required: ['name', 'email']
 });
 
-// Validate JS objects directly
+// Ultra-fast boolean check — 2.2x faster than ajv (JS codegen, no NAPI)
+v.isValidObject({ name: 'Mert', email: 'mert@example.com', age: 26 }); // true
+
+// Full validation with error details
 const result = v.validate({ name: 'Mert', email: 'mert@example.com', age: 26 });
 console.log(result.valid); // true
+console.log(result.errors); // []
 
-// Validate JSON strings (simdjson fast path)
+// JSON string validation (simdjson fast path)
 v.validateJSON('{"name": "Mert", "email": "mert@example.com"}');
-
-// Fast boolean check
 v.isValidJSON('{"name": "Mert", "email": "mert@example.com"}'); // true
 
-// Buffer input (zero-copy)
+// Buffer input (zero-copy, raw NAPI)
 v.isValid(Buffer.from('{"name": "Mert", "email": "mert@example.com"}'));
 
-// Parallel batch (multi-core, NDJSON)
+// Parallel batch — multi-core, NDJSON (5.9x faster than ajv)
 const ndjson = Buffer.from(lines.join('\n'));
 v.isValidParallel(ndjson);  // bool[]
 v.countValid(ndjson);        // number
