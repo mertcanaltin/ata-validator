@@ -33,7 +33,7 @@ const validDoc = {
   id: 42,
   name: "Mert Can Altin",
   email: "mert@example.com",
-  age: 28,
+  age: 26,
   active: true,
   tags: ["nodejs", "cpp", "performance"],
   address: { street: "123 Main St", city: "Istanbul", zip: "34000" },
@@ -49,6 +49,9 @@ const invalidDoc = {
   address: { zip: "abc" },
 };
 
+const validJsonStr = JSON.stringify(validDoc);
+const invalidJsonStr = JSON.stringify(invalidDoc);
+
 const N = 100000;
 
 function bench(label, fn) {
@@ -58,88 +61,103 @@ function bench(label, fn) {
   const elapsed = performance.now() - start;
   const opsPerSec = N / (elapsed / 1000);
   console.log(
-    `  ${label.padEnd(45)} ${Math.round(opsPerSec).toString().padStart(10)} ops/sec  (${elapsed.toFixed(2)} ms)`
+    `  ${label.padEnd(50)} ${Math.round(opsPerSec).toString().padStart(10)} ops/sec  (${elapsed.toFixed(2)} ms)`
   );
   return opsPerSec;
 }
 
-console.log("\n========================================");
-console.log("  ata vs ajv - Fair Comparison Benchmark");
-console.log("  Both validating JS objects directly");
-console.log("========================================\n");
-
-// --- Schema Compilation ---
-console.log("Schema Compilation:");
-
-bench("ata  compile", () => {
-  new Validator(schema);
-});
-
-bench("ajv  compile", () => {
-  const a = new Ajv({ allErrors: true });
-  addFormats(a);
-  a.compile(schema);
-});
-
-// --- Pre-compiled Validation (JS objects) ---
 const ataValidator = new Validator(schema);
 const ajv = new Ajv({ allErrors: true });
 addFormats(ajv);
 const ajvValidate = ajv.compile(schema);
 
-console.log("\nValidation - Valid Document (JS object):");
-const ataValidOps = bench("ata  validate(jsObject)", () => {
+console.log("\n==========================================================");
+console.log("  ata vs ajv — Real-world Benchmark");
+console.log("  The honest comparison: JSON string → validation result");
+console.log("==========================================================\n");
+
+// ============================================================
+// 1. The real comparison: JSON string in, boolean out
+// ============================================================
+console.log("1. JSON string → validate (the real pipeline):\n");
+
+console.log("   Valid document:");
+const ataJsonValid = bench("   ata  validateJSON(str)", () => {
+  ataValidator.validateJSON(validJsonStr);
+});
+const ajvJsonValid = bench("   ajv  JSON.parse(str) + validate(obj)", () => {
+  ajvValidate(JSON.parse(validJsonStr));
+});
+
+console.log("\n   Invalid document:");
+const ataJsonInvalid = bench("   ata  validateJSON(str)", () => {
+  ataValidator.validateJSON(invalidJsonStr);
+});
+const ajvJsonInvalid = bench("   ajv  JSON.parse(str) + validate(obj)", () => {
+  ajvValidate(JSON.parse(invalidJsonStr));
+});
+
+// ============================================================
+// 2. Fast boolean check (no error details)
+// ============================================================
+console.log("\n2. Fast boolean check — isValidJSON (ata) vs JSON.parse + validate (ajv):\n");
+
+const ataFastValid = bench("   ata  isValidJSON(str)", () => {
+  ataValidator.isValidJSON(validJsonStr);
+});
+const ajvFastValid = bench("   ajv  JSON.parse(str) + validate(obj)", () => {
+  ajvValidate(JSON.parse(validJsonStr));
+});
+
+// ============================================================
+// 3. JS object validation (ajv's home turf)
+// ============================================================
+console.log("\n3. JS object → validate (ajv's home turf):\n");
+
+bench("   ata  validate(jsObject)", () => {
   ataValidator.validate(validDoc);
 });
-const ajvValidOps = bench("ajv  validate(jsObject)", () => {
+bench("   ajv  validate(jsObject)", () => {
   ajvValidate(validDoc);
 });
 
-console.log("\nValidation - Invalid Document (JS object):");
-const ataInvalidOps = bench("ata  validate(jsObject)", () => {
-  ataValidator.validate(invalidDoc);
-});
-const ajvInvalidOps = bench("ajv  validate(jsObject)", () => {
-  ajvValidate(invalidDoc);
-});
+// ============================================================
+// 4. Schema compilation
+// ============================================================
+console.log("\n4. Schema compilation:\n");
 
-// --- Simple type check ---
-console.log("\nSimple Type Check:");
-const ataSimple = new Validator({ type: "string" });
-const ajvSimple = ajv.compile({ type: "string" });
-
-bench("ata  type:string", () => {
-  ataSimple.validate("hello");
+const ataCompile = bench("   ata  compile", () => {
+  new Validator(schema);
 });
-bench("ajv  type:string", () => {
-  ajvSimple("hello");
+const ajvCompile = bench("   ajv  compile", () => {
+  const a = new Ajv({ allErrors: true });
+  addFormats(a);
+  a.compile(schema);
 });
 
-// --- Summary ---
-console.log("\n========================================");
-console.log("  Summary");
-console.log("========================================");
-console.log(
-  `  Valid doc:   ata ${Math.round(ataValidOps).toLocaleString()} vs ajv ${Math.round(ajvValidOps).toLocaleString()} ops/sec`
-);
-console.log(
-  `  Invalid doc: ata ${Math.round(ataInvalidOps).toLocaleString()} vs ajv ${Math.round(ajvInvalidOps).toLocaleString()} ops/sec`
-);
+// ============================================================
+// Summary
+// ============================================================
+console.log("\n==========================================================");
+console.log("  Summary — JSON string → validate (the real comparison)");
+console.log("==========================================================");
 
-const validRatio = ataValidOps / ajvValidOps;
-const invalidRatio = ataInvalidOps / ajvInvalidOps;
-if (validRatio > 1) {
-  console.log(`  ata is ${validRatio.toFixed(1)}x FASTER on valid docs`);
-} else {
-  console.log(
-    `  ajv is ${(1 / validRatio).toFixed(1)}x faster on valid docs`
-  );
+function ratio(a, b, aName, bName) {
+  const r = a / b;
+  if (r >= 1) return `  ${aName} is ${r.toFixed(1)}x FASTER`;
+  return `  ${bName} is ${(1/r).toFixed(1)}x faster`;
 }
-if (invalidRatio > 1) {
-  console.log(`  ata is ${invalidRatio.toFixed(1)}x FASTER on invalid docs`);
-} else {
-  console.log(
-    `  ajv is ${(1 / invalidRatio).toFixed(1)}x faster on invalid docs`
-  );
-}
+
+console.log(`\n  Valid doc:     ata ${Math.round(ataJsonValid).toLocaleString()} vs ajv ${Math.round(ajvJsonValid).toLocaleString()} ops/sec`);
+console.log(ratio(ataJsonValid, ajvJsonValid, "ata", "ajv"));
+
+console.log(`\n  Invalid doc:   ata ${Math.round(ataJsonInvalid).toLocaleString()} vs ajv ${Math.round(ajvJsonInvalid).toLocaleString()} ops/sec`);
+console.log(ratio(ataJsonInvalid, ajvJsonInvalid, "ata", "ajv"));
+
+console.log(`\n  isValidJSON:   ata ${Math.round(ataFastValid).toLocaleString()} vs ajv ${Math.round(ajvFastValid).toLocaleString()} ops/sec`);
+console.log(ratio(ataFastValid, ajvFastValid, "ata", "ajv"));
+
+console.log(`\n  Compilation:   ata ${Math.round(ataCompile).toLocaleString()} vs ajv ${Math.round(ajvCompile).toLocaleString()} ops/sec`);
+console.log(ratio(ataCompile, ajvCompile, "ata", "ajv"));
+
 console.log();
