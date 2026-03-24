@@ -1,5 +1,5 @@
 const native = require("node-gyp-build")(__dirname);
-const { compileToJS, compileToJSCodegen } = require("./lib/js-compiler");
+const { compileToJS, compileToJSCodegen, compileToJSCodegenWithErrors } = require("./lib/js-compiler");
 
 // Extract default values from a schema tree. Returns a function that applies
 // defaults to an object in-place (mutates), or null if no defaults exist.
@@ -214,6 +214,10 @@ class Validator {
     const jsFn = process.env.ATA_FORCE_NAPI
       ? null
       : (compileToJSCodegen(schemaObj) || compileToJS(schemaObj));
+    // JS error-collecting codegen — experimental, enable with ATA_JS_ERRORS=1
+    const jsErrFn = process.env.ATA_JS_ERRORS
+      ? compileToJSCodegenWithErrors(schemaObj)
+      : null;
     this._jsFn = jsFn;
 
     // Data mutators — applied in-place before validation
@@ -242,9 +246,14 @@ class Validator {
     const useSimdjsonForLarge = !hasArrayTraversal;
 
     if (jsFn) {
+      // If error-collecting codegen is available, invalid path stays in JS too.
+      // Falls back to NAPI if JS error codegen throws (edge cases).
+      const errFn = jsErrFn
+        ? (d) => { try { return jsErrFn(d, true); } catch { return compiled.validate(d); } }
+        : (d) => compiled.validate(d);
       this.validate = preprocess
-        ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : compiled.validate(data); }
-        : (data) => jsFn(data) ? VALID_RESULT : compiled.validate(data);
+        ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
+        : (data) => jsFn(data) ? VALID_RESULT : errFn(data);
       this.isValidObject = jsFn;
       this.validateJSON = useSimdjsonForLarge
         ? (jsonStr) => {
