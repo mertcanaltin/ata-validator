@@ -250,7 +250,7 @@ class Validator {
     const useSimdjsonForLarge = !hasArrayTraversal;
 
     if (jsFn) {
-      // Speculative: jsFn (fast bool) for valid path, combined for error path (single pass, optimized)
+      // Error handler: combined (optimized) → jsErrFn → NAPI fallback
       const errFn = jsCombinedFn
         ? (d) => { try { return jsCombinedFn(d); } catch { return compiled.validate(d); } }
         : jsErrFn
