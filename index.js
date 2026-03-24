@@ -1,5 +1,5 @@
 const native = require("node-gyp-build")(__dirname);
-const { compileToJS, compileToJSCodegen, compileToJSCodegenWithErrors } = require("./lib/js-compiler");
+const { compileToJS, compileToJSCodegen, compileToJSCodegenWithErrors, compileToJSCombined } = require("./lib/js-compiler");
 
 // Extract default values from a schema tree. Returns a function that applies
 // defaults to an object in-place (mutates), or null if no defaults exist.
@@ -214,10 +214,14 @@ class Validator {
     const jsFn = process.env.ATA_FORCE_NAPI
       ? null
       : (compileToJSCodegen(schemaObj) || compileToJS(schemaObj));
-    // JS error-collecting codegen — invalid path stays in JS, no NAPI fallback
-    const jsErrFn = process.env.ATA_FORCE_NAPI
+    // Combined validator: single pass, validates + collects errors, all optimized
+    const jsCombinedFn = process.env.ATA_FORCE_NAPI
       ? null
-      : compileToJSCodegenWithErrors(schemaObj);
+      : compileToJSCombined(schemaObj, VALID_RESULT);
+    // Fallback error-collecting codegen (less optimized, for schemas combined can't handle)
+    const jsErrFn = (!jsCombinedFn && !process.env.ATA_FORCE_NAPI)
+      ? compileToJSCodegenWithErrors(schemaObj)
+      : null;
     this._jsFn = jsFn;
 
     // Data mutators — applied in-place before validation
@@ -246,40 +250,31 @@ class Validator {
     const useSimdjsonForLarge = !hasArrayTraversal;
 
     if (jsFn) {
-      // If error-collecting codegen is available, invalid path stays in JS too.
-      // Falls back to NAPI if JS error codegen throws (edge cases).
-      const errFn = jsErrFn
-        ? (d) => { try { return jsErrFn(d, true); } catch { return compiled.validate(d); } }
-        : (d) => compiled.validate(d);
+      // Speculative: jsFn (fast bool) for valid path, combined for error path (single pass, optimized)
+      const errFn = jsCombinedFn
+        ? (d) => { try { return jsCombinedFn(d); } catch { return compiled.validate(d); } }
+        : jsErrFn
+          ? (d) => { try { return jsErrFn(d, true); } catch { return compiled.validate(d); } }
+          : (d) => compiled.validate(d);
       this.validate = preprocess
         ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
         : (data) => jsFn(data) ? VALID_RESULT : errFn(data);
       this.isValidObject = jsFn;
+      const jsonValidateFn = (obj) => jsFn(obj) ? VALID_RESULT : errFn(obj);
       this.validateJSON = useSimdjsonForLarge
         ? (jsonStr) => {
-            // Selective schema: large docs use simdjson (skips irrelevant data)
             if (jsonStr.length >= SIMDJSON_THRESHOLD) {
               const buf = Buffer.from(jsonStr);
               if (native.rawFastValidate(fastSlot, buf)) return VALID_RESULT;
               return compiled.validateJSON(jsonStr);
             }
-            try {
-              const obj = JSON.parse(jsonStr);
-              if (jsFn(obj)) return VALID_RESULT;
-              return errFn(obj);
-            } catch (e) {
-              if (!(e instanceof SyntaxError)) throw e;
-            }
+            try { return jsonValidateFn(JSON.parse(jsonStr)); }
+            catch (e) { if (!(e instanceof SyntaxError)) throw e; }
             return compiled.validateJSON(jsonStr);
           }
         : (jsonStr) => {
-            try {
-              const obj = JSON.parse(jsonStr);
-              if (jsFn(obj)) return VALID_RESULT;
-              return errFn(obj);
-            } catch (e) {
-              if (!(e instanceof SyntaxError)) throw e;
-            }
+            try { return jsonValidateFn(JSON.parse(jsonStr)); }
+            catch (e) { if (!(e instanceof SyntaxError)) throw e; }
             return compiled.validateJSON(jsonStr);
           };
       this.isValidJSON = useSimdjsonForLarge
