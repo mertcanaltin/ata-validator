@@ -1,4 +1,5 @@
 const { Validator } = require("../index");
+const native = require("node-gyp-build")(require("path").resolve(__dirname, ".."));
 const Ajv = require("ajv");
 const addFormats = require("ajv-formats");
 
@@ -66,20 +67,54 @@ function bench(label, fn) {
   return opsPerSec;
 }
 
+function ratio(a, b, aName, bName) {
+  const r = a / b;
+  if (r >= 1) return `  ${aName} is ${r.toFixed(1)}x faster`;
+  return `  ${bName} is ${(1/r).toFixed(1)}x faster`;
+}
+
 const ataValidator = new Validator(schema);
 const ajv = new Ajv({ allErrors: true });
 addFormats(ajv);
 const ajvValidate = ajv.compile(schema);
 
 console.log("\n==========================================================");
-console.log("  ata vs ajv — Real-world Benchmark");
-console.log("  The honest comparison: JSON string → validation result");
+console.log("  ata vs ajv — Apples-to-Apples Benchmark");
 console.log("==========================================================\n");
 
 // ============================================================
-// 1. The real comparison: JSON string in, boolean out
+// 1. JS object -> validate (the common Node.js case)
 // ============================================================
-console.log("1. JSON string → validate (the real pipeline):\n");
+console.log("1. JS object -> validate (most common in Node.js apps):\n");
+
+console.log("   Valid document:");
+const ataObjValid = bench("   ata  validate(obj)", () => {
+  ataValidator.validate(validDoc);
+});
+const ajvObjValid = bench("   ajv  validate(obj)", () => {
+  ajvValidate(validDoc);
+});
+
+console.log("\n   Valid document (fast boolean):");
+const ataObjFast = bench("   ata  isValidObject(obj)", () => {
+  ataValidator.isValidObject(validDoc);
+});
+const ajvObjFast = bench("   ajv  validate(obj)", () => {
+  ajvValidate(validDoc);
+});
+
+console.log("\n   Invalid document:");
+const ataObjInvalid = bench("   ata  validate(obj)", () => {
+  ataValidator.validate(invalidDoc);
+});
+const ajvObjInvalid = bench("   ajv  validate(obj)", () => {
+  ajvValidate(invalidDoc);
+});
+
+// ============================================================
+// 2. JSON string -> validate (data from network/disk/service)
+// ============================================================
+console.log("\n2. JSON string -> validate (data from network, disk, or another service):\n");
 
 console.log("   Valid document:");
 const ataJsonValid = bench("   ata  validateJSON(str)", () => {
@@ -97,39 +132,36 @@ const ajvJsonInvalid = bench("   ajv  JSON.parse(str) + validate(obj)", () => {
   ajvValidate(JSON.parse(invalidJsonStr));
 });
 
-// ============================================================
-// 2. Fast boolean check (no error details)
-// ============================================================
-console.log("\n2. Fast boolean check — isValidJSON (ata) vs JSON.parse + validate (ajv):\n");
-
+console.log("\n   Fast boolean (valid):");
 const ataFastValid = bench("   ata  isValidJSON(str)", () => {
   ataValidator.isValidJSON(validJsonStr);
 });
-const ajvFastValid = bench("   ajv  JSON.parse(str) + validate(obj)", () => {
+const ajvFastJsonValid = bench("   ajv  JSON.parse(str) + validate(obj)", () => {
   ajvValidate(JSON.parse(validJsonStr));
 });
 
 // ============================================================
-// 3. JS object validation (ajv's home turf)
+// 3. Schema compilation
 // ============================================================
-console.log("\n3. JS object → validate (ajv's home turf):\n");
+console.log("\n3. Schema compilation:\n");
 
-bench("   ata  validate(jsObject)", () => {
-  ataValidator.validate(validDoc);
-});
-bench("   ajv  validate(jsObject)", () => {
-  ajvValidate(validDoc);
-});
+const COMPILE_N = 1000;
+function benchCompile(label, fn) {
+  for (let i = 0; i < 10; i++) fn(); // warmup
+  const start = performance.now();
+  for (let i = 0; i < COMPILE_N; i++) fn();
+  const elapsed = performance.now() - start;
+  const opsPerSec = COMPILE_N / (elapsed / 1000);
+  console.log(
+    `  ${label.padEnd(50)} ${Math.round(opsPerSec).toString().padStart(10)} ops/sec  (${elapsed.toFixed(2)} ms)`
+  );
+  return opsPerSec;
+}
 
-// ============================================================
-// 4. Schema compilation
-// ============================================================
-console.log("\n4. Schema compilation:\n");
-
-const ataCompile = bench("   ata  compile", () => {
-  new Validator(schema);
+const ataCompile = benchCompile("   ata  native.CompiledSchema(str)", () => {
+  new native.CompiledSchema(JSON.stringify(schema));
 });
-const ajvCompile = bench("   ajv  compile", () => {
+const ajvCompile = benchCompile("   ajv  compile", () => {
   const a = new Ajv({ allErrors: true });
   addFormats(a);
   a.compile(schema);
@@ -139,25 +171,26 @@ const ajvCompile = bench("   ajv  compile", () => {
 // Summary
 // ============================================================
 console.log("\n==========================================================");
-console.log("  Summary — JSON string → validate (the real comparison)");
+console.log("  Summary");
 console.log("==========================================================");
 
-function ratio(a, b, aName, bName) {
-  const r = a / b;
-  if (r >= 1) return `  ${aName} is ${r.toFixed(1)}x FASTER`;
-  return `  ${bName} is ${(1/r).toFixed(1)}x faster`;
-}
+console.log("\n  JS object (the common case):");
+console.log(`    validate(obj) valid:    ata ${Math.round(ataObjValid).toLocaleString()} vs ajv ${Math.round(ajvObjValid).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataObjValid, ajvObjValid, "ata", "ajv"));
+console.log(`    isValidObject(obj):     ata ${Math.round(ataObjFast).toLocaleString()} vs ajv ${Math.round(ajvObjFast).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataObjFast, ajvObjFast, "ata", "ajv"));
+console.log(`    validate(obj) invalid:  ata ${Math.round(ataObjInvalid).toLocaleString()} vs ajv ${Math.round(ajvObjInvalid).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataObjInvalid, ajvObjInvalid, "ata", "ajv"));
 
-console.log(`\n  Valid doc:     ata ${Math.round(ataJsonValid).toLocaleString()} vs ajv ${Math.round(ajvJsonValid).toLocaleString()} ops/sec`);
-console.log(ratio(ataJsonValid, ajvJsonValid, "ata", "ajv"));
+console.log("\n  JSON string (network/disk):");
+console.log(`    validateJSON valid:     ata ${Math.round(ataJsonValid).toLocaleString()} vs ajv ${Math.round(ajvJsonValid).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataJsonValid, ajvJsonValid, "ata", "ajv"));
+console.log(`    validateJSON invalid:   ata ${Math.round(ataJsonInvalid).toLocaleString()} vs ajv ${Math.round(ajvJsonInvalid).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataJsonInvalid, ajvJsonInvalid, "ata", "ajv"));
+console.log(`    isValidJSON:            ata ${Math.round(ataFastValid).toLocaleString()} vs ajv ${Math.round(ajvFastJsonValid).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataFastValid, ajvFastJsonValid, "ata", "ajv"));
 
-console.log(`\n  Invalid doc:   ata ${Math.round(ataJsonInvalid).toLocaleString()} vs ajv ${Math.round(ajvJsonInvalid).toLocaleString()} ops/sec`);
-console.log(ratio(ataJsonInvalid, ajvJsonInvalid, "ata", "ajv"));
-
-console.log(`\n  isValidJSON:   ata ${Math.round(ataFastValid).toLocaleString()} vs ajv ${Math.round(ajvFastValid).toLocaleString()} ops/sec`);
-console.log(ratio(ataFastValid, ajvFastValid, "ata", "ajv"));
-
-console.log(`\n  Compilation:   ata ${Math.round(ataCompile).toLocaleString()} vs ajv ${Math.round(ajvCompile).toLocaleString()} ops/sec`);
-console.log(ratio(ataCompile, ajvCompile, "ata", "ajv"));
+console.log(`\n  Compilation:              ata ${Math.round(ataCompile).toLocaleString()} vs ajv ${Math.round(ajvCompile).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataCompile, ajvCompile, "ata", "ajv"));
 
 console.log();

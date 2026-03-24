@@ -6,6 +6,13 @@
 #include <set>
 #include <unordered_map>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <sysinfoapi.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "simdjson.h"
 
 // --- Fast format validators (no std::regex) ---
@@ -279,11 +286,20 @@ struct compiled_schema {
   schema_node_ptr root;
   std::unordered_map<std::string, schema_node_ptr> defs;
   std::string raw_schema;
-  dom::parser parser;
-  dom::parser doc_parser;
-  simdjson::ondemand::parser od_parser;  // On Demand parser for fast path
-  cg::plan gen_plan;  // codegen validation plan
-  bool use_ondemand = false;  // true if codegen plan supports On Demand
+  dom::parser parser;          // used only at compile time
+  cg::plan gen_plan;           // codegen validation plan
+  bool use_ondemand = false;   // true if codegen plan supports On Demand
+};
+
+// Thread-local persistent parsers — reused across all validate calls on the
+// same thread.  Keeps internal buffers hot in cache and avoids re-allocation.
+static dom::parser& tl_dom_parser() {
+  thread_local dom::parser p;
+  return p;
+}
+static simdjson::ondemand::parser& tl_od_parser() {
+  thread_local simdjson::ondemand::parser p;
+  return p;
 };
 
 // --- Schema compilation ---
@@ -1517,6 +1533,36 @@ static bool plan_supports_ondemand(const cg::plan& p) {
   return true;
 }
 
+// Free padding: check if buffer is near a page boundary
+// On modern systems, pages are at least 4096 bytes. If we're far enough
+// from the end of a page, we can read 64 bytes beyond without a fault.
+static long get_page_size() {
+#ifdef _WIN32
+  SYSTEM_INFO si; GetSystemInfo(&si); return si.dwPageSize;
+#else
+  static long ps = sysconf(_SC_PAGESIZE);
+  return ps;
+#endif
+}
+
+static bool near_page_boundary(const char* buf, size_t len) {
+  return ((reinterpret_cast<uintptr_t>(buf + len - 1) % get_page_size())
+          + REQUIRED_PADDING >= static_cast<uintptr_t>(get_page_size()));
+}
+
+// Zero-copy validate with free padding (Lemire's trick).
+// Almost never allocates — only if buffer is near a page boundary.
+static simdjson::padded_string_view get_free_padded_view(
+    const char* data, size_t length, simdjson::padded_string& fallback) {
+  if (near_page_boundary(data, length)) {
+    // Rare: near page boundary, must copy
+    fallback = simdjson::padded_string(data, length);
+    return fallback;
+  }
+  // Common: free padding available, zero-copy
+  return simdjson::padded_string_view(data, length, length + REQUIRED_PADDING);
+}
+
 schema_ref compile(std::string_view schema_json) {
   auto ctx = std::make_shared<compiled_schema>();
   ctx->raw_schema = std::string(schema_json);
@@ -1546,14 +1592,15 @@ validation_result validate(const schema_ref& schema, std::string_view json,
     return {false, {{error_code::invalid_schema, "", "schema not compiled"}}};
   }
 
-  auto padded = simdjson::padded_string(json);
+  // Free padding trick: avoid padded_string copy when possible
+  simdjson::padded_string fallback;
+  auto psv = get_free_padded_view(json.data(), json.size(), fallback);
 
   // Ultra-fast path: On Demand (no DOM materialization)
-  // Only beneficial for larger documents where DOM materialization cost dominates
   static constexpr size_t OD_THRESHOLD = 32;
   if (schema.impl->use_ondemand && !schema.impl->gen_plan.code.empty() &&
       json.size() >= OD_THRESHOLD) {
-    auto od_result = schema.impl->od_parser.iterate(padded);
+    auto od_result = tl_od_parser().iterate(psv);
     if (!od_result.error()) {
       simdjson::ondemand::value root_val;
       if (od_result.get_value().get(root_val) == SUCCESS) {
@@ -1562,10 +1609,12 @@ validation_result validate(const schema_ref& schema, std::string_view json,
         }
       }
     }
-    // On Demand said invalid — fall through to DOM for error details
+    // Need fresh view for DOM parse (On Demand consumed it)
+    psv = get_free_padded_view(json.data(), json.size(), fallback);
   }
 
-  auto result = schema.impl->doc_parser.parse(padded);
+  auto& dom_p = tl_dom_parser();
+  auto result = dom_p.parse(psv);
   if (result.error()) {
     return {false, {{error_code::invalid_json, "", "invalid JSON document"}}};
   }
@@ -1580,7 +1629,7 @@ validation_result validate(const schema_ref& schema, std::string_view json,
   }
 
   // Slow path: re-parse + tree walker with error details
-  auto result2 = schema.impl->doc_parser.parse(padded);
+  auto result2 = dom_p.parse(psv);
   std::vector<validation_error> errors;
   validate_node(schema.impl->root, result2.value(), "", *schema.impl, errors,
                 opts.all_errors);
@@ -1598,20 +1647,19 @@ validation_result validate(std::string_view schema_json,
   return validate(s, json, opts);
 }
 
+
 bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t length) {
   if (!schema.impl || !schema.impl->root) return false;
 
-  // Zero-copy DOM parse via padded_string_view (no memcpy)
-  simdjson::padded_string_view psv(data, length, length + REQUIRED_PADDING);
-  auto result = schema.impl->doc_parser.parse(psv);
+  simdjson::padded_string fallback;
+  auto psv = get_free_padded_view(data, length, fallback);
+  auto result = tl_dom_parser().parse(psv);
   if (result.error()) return false;
 
-  // Codegen fast path
   if (!schema.impl->gen_plan.code.empty()) {
     return cg_exec(schema.impl->gen_plan, schema.impl->gen_plan.code, result.value());
   }
 
-  // Tree walker (no error collection)
   std::vector<validation_error> errors;
   validate_node(schema.impl->root, result.value(), "", *schema.impl, errors, false);
   return errors.empty();

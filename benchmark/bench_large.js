@@ -83,32 +83,53 @@ function bench(label, iterations, fn) {
   return opsPerSec;
 }
 
+function winner(ataOps, ajvOps) {
+  const ratio = ataOps / ajvOps;
+  if (ratio > 1) {
+    return `  >>> ata ${ratio.toFixed(2)}x faster`;
+  } else {
+    return `  >>> ajv ${(1/ratio).toFixed(2)}x faster`;
+  }
+}
+
 const ajv = new Ajv({ allErrors: true });
 addFormats(ajv);
 const ajvValidate = ajv.compile(schema);
+const ataValidator = new Validator(schema);
+
+console.log("==========================================================");
+console.log("  ata vs ajv — Apples-to-Apples Benchmark");
+console.log("  Both directions: JSON string and JS object pipelines");
+console.log("==========================================================");
 
 for (const count of [10, 50, 100, 500, 1000]) {
   const data = makeData(count);
   const jsonStr = JSON.stringify(data);
-  const ataValidator = new Validator(schema);
 
   console.log(`\n--- ${count} users (${(jsonStr.length / 1024).toFixed(1)} KB JSON) ---`);
 
   const N = count >= 500 ? 1000 : count >= 100 ? 5000 : count >= 50 ? 10000 : 20000;
 
-  const ajvOps = bench(`ajv  JSON.parse + validate`, N, () => {
-    ajvValidate(JSON.parse(jsonStr));
-  });
-
-  const ataOps = bench(`ata  validateJSON (simdjson)`, N, () => {
+  // Pipeline A: input is a JSON string
+  // This is the case when data comes from disk, network, or another service
+  console.log("\n  [A] JSON string -> validation result:");
+  const ataJsonOps = bench(`ata  validateJSON(str)`, N, () => {
     ataValidator.validateJSON(jsonStr);
   });
+  const ajvJsonOps = bench(`ajv  JSON.parse(str) + validate(obj)`, N, () => {
+    ajvValidate(JSON.parse(jsonStr));
+  });
+  console.log(winner(ataJsonOps, ajvJsonOps));
 
-  const ratio = ataOps / ajvOps;
-  if (ratio > 1) {
-    console.log(`  >>> ata is ${ratio.toFixed(2)}x FASTER`);
-  } else {
-    console.log(`  >>> ajv is ${(1/ratio).toFixed(2)}x faster`);
-  }
+  // Pipeline B: input is a JS object
+  // This is the case in most Node.js apps (express req.body, function returns, etc.)
+  console.log("\n  [B] JS object -> validation result:");
+  const ataObjOps = bench(`ata  validate(obj)`, N, () => {
+    ataValidator.validate(data);
+  });
+  const ajvObjOps = bench(`ajv  validate(obj)`, N, () => {
+    ajvValidate(data);
+  });
+  console.log(winner(ataObjOps, ajvObjOps));
 }
 console.log();

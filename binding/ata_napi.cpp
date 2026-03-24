@@ -841,6 +841,32 @@ class CompiledSchema : public Napi::ObjectWrap<CompiledSchema> {
     return ValidateDirectImpl(env, info[0]);
   }
 
+  // Thread-local reusable buffer for string extraction — avoids per-call allocation.
+  // Sized with SIMDJSON_PADDING so simdjson can read safely beyond the JSON.
+  static constexpr size_t TL_BUF_SHRINK_THRESHOLD = 64 * 1024; // 64KB
+
+  static std::string& tl_json_buf() {
+    thread_local std::string buf;
+    return buf;
+  }
+
+  // Extract JS string into reusable thread-local buffer with simdjson padding.
+  // Returns {data, length} — data is valid until next call on same thread.
+  static std::pair<const char*, size_t> extract_string(napi_env env, napi_value val) {
+    size_t len = 0;
+    napi_get_value_string_utf8(env, val, nullptr, 0, &len);
+    auto& buf = tl_json_buf();
+    const size_t needed = len + 1 + ata::REQUIRED_PADDING;
+    if (buf.size() < needed) buf.resize(needed);
+    napi_get_value_string_utf8(env, val, buf.data(), len + 1, &len);
+    // Shrink back if a one-off large string bloated the buffer
+    if (buf.size() > TL_BUF_SHRINK_THRESHOLD && len < TL_BUF_SHRINK_THRESHOLD / 2) {
+      buf.resize(TL_BUF_SHRINK_THRESHOLD);
+      buf.shrink_to_fit();
+    }
+    return {buf.data(), len};
+  }
+
   // Validate via JSON string (simdjson parse path)
   Napi::Value ValidateJSON(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -860,11 +886,8 @@ class CompiledSchema : public Napi::ObjectWrap<CompiledSchema> {
           .ThrowAsJavaScriptException();
       return env.Undefined();
     }
-    size_t len = 0;
-    napi_get_value_string_utf8(env, info[0], nullptr, 0, &len);
-    std::string json(len, '\0');
-    napi_get_value_string_utf8(env, info[0], json.data(), len + 1, &len);
-    auto result = ata::validate(schema_, json);
+    auto [data, len] = extract_string(env, info[0]);
+    auto result = ata::validate(schema_, std::string_view(data, len));
     return make_result(env, result);
   }
 
@@ -883,14 +906,10 @@ class CompiledSchema : public Napi::ObjectWrap<CompiledSchema> {
     if (!info[0].IsString()) {
       return Napi::Boolean::New(env, false);
     }
-    // Use napi_get_value_string_utf8 to get length first, then read directly
-    size_t len = 0;
-    napi_get_value_string_utf8(env, info[0], nullptr, 0, &len);
-    // Allocate padded buffer for simdjson (needs SIMDJSON_PADDING)
-    std::string json(len, '\0');
-    napi_get_value_string_utf8(env, info[0], json.data(), len + 1, &len);
-    auto result = ata::validate(schema_, json);
-    return Napi::Boolean::New(env, result.valid);
+    auto [data, len] = extract_string(env, info[0]);
+    // Buffer already has REQUIRED_PADDING — use zero-copy prepadded path
+    bool valid = ata::is_valid_prepadded(schema_, data, len);
+    return Napi::Boolean::New(env, valid);
   }
 
   // Explicit direct validation (always V8 traversal, never stringify)
@@ -1316,14 +1335,10 @@ static napi_value RawParallelValidate(napi_env env, napi_callback_info info) {
           it = cache.emplace(slot, ata::compile(g_fast_schema_jsons[slot])).first;
         }
         auto& s = it->second;
-        // Thread-local reusable padded buffer (no malloc/free per validation)
-        thread_local std::vector<char> tl_buf;
+        // Free padding: lines in NDJSON buffer almost always have free padding
+        // (next line's data serves as padding). Only last line might need copy.
         for (size_t i = from; i < to; i++) {
-          size_t needed = lines[i].len + 64;
-          if (tl_buf.size() < needed) tl_buf.resize(needed * 2);
-          memcpy(tl_buf.data(), lines[i].ptr, lines[i].len);
-          memset(tl_buf.data() + lines[i].len, 0, 64);
-          results[i] = ata::is_valid_prepadded(s, tl_buf.data(), lines[i].len);
+          results[i] = ata::is_valid_prepadded(s, lines[i].ptr, lines[i].len);
         }
       });
     }
@@ -1412,14 +1427,9 @@ static napi_value RawParallelCount(napi_env env, napi_callback_info info) {
         it = cache.emplace(slot, ata::compile(g_fast_schema_jsons[slot])).first;
       }
       auto& s = it->second;
-      thread_local std::vector<char> tl_buf;
       uint32_t local_cnt = 0;
       for (size_t i = from; i < to; i++) {
-        size_t needed = lines[i].len + 64;
-        if (tl_buf.size() < needed) tl_buf.resize(needed * 2);
-        memcpy(tl_buf.data(), lines[i].ptr, lines[i].len);
-        memset(tl_buf.data() + lines[i].len, 0, 64);
-        if (ata::is_valid_prepadded(s, tl_buf.data(), lines[i].len))
+        if (ata::is_valid_prepadded(s, lines[i].ptr, lines[i].len))
           local_cnt++;
       }
       valid_count.fetch_add(local_cnt, std::memory_order_relaxed);
