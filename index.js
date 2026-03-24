@@ -250,17 +250,24 @@ class Validator {
     const useSimdjsonForLarge = !hasArrayTraversal;
 
     if (jsFn) {
-      // Error handler: combined (optimized) → jsErrFn → NAPI fallback
-      const errFn = jsCombinedFn
-        ? (d) => { try { return jsCombinedFn(d); } catch { return compiled.validate(d); } }
-        : jsErrFn
-          ? (d) => { try { return jsErrFn(d, true); } catch { return compiled.validate(d); } }
-          : (d) => compiled.validate(d);
-      this.validate = preprocess
-        ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
-        : (data) => jsFn(data) ? VALID_RESULT : errFn(data);
+      // Best path: combined validator (single pass, lazy error array)
+      // Valid data: no array allocation, returns VALID_RESULT
+      // Invalid data: collects errors in one pass (no double validation)
+      // Fallback: jsFn + errFn for schemas combined can't handle
+      const errFn = jsErrFn
+        ? (d) => { try { return jsErrFn(d, true); } catch { return compiled.validate(d); } }
+        : (d) => compiled.validate(d);
+      this.validate = jsCombinedFn
+        ? (preprocess
+            ? (data) => { preprocess(data); try { return jsCombinedFn(data); } catch { return jsFn(data) ? VALID_RESULT : errFn(data); } }
+            : (data) => { try { return jsCombinedFn(data); } catch { return jsFn(data) ? VALID_RESULT : errFn(data); } })
+        : (preprocess
+            ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
+            : (data) => jsFn(data) ? VALID_RESULT : errFn(data));
       this.isValidObject = jsFn;
-      const jsonValidateFn = (obj) => jsFn(obj) ? VALID_RESULT : errFn(obj);
+      const jsonValidateFn = jsCombinedFn
+        ? (obj) => { try { return jsCombinedFn(obj); } catch { return jsFn(obj) ? VALID_RESULT : errFn(obj); } }
+        : (obj) => jsFn(obj) ? VALID_RESULT : errFn(obj);
       this.validateJSON = useSimdjsonForLarge
         ? (jsonStr) => {
             if (jsonStr.length >= SIMDJSON_THRESHOLD) {
