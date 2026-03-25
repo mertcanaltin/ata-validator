@@ -502,6 +502,28 @@ Validator.bundle = function(schemas, opts) {
   return "'use strict';\nmodule.exports = [\n" + parts.join(',\n') + '\n];\n';
 };
 
+// Zero-dependency self-contained bundle — no require('ata-validator') needed at runtime.
+// Each entry is a function(d) that returns {valid:true,errors:[]} or {valid:false,errors:[...]}.
+// Fastify can use these directly without Validator class.
+Validator.bundleStandalone = function(schemas, opts) {
+  const R = "Object.freeze({valid:true,errors:Object.freeze([])})";
+  const fns = schemas.map(schema => {
+    const v = new Validator(schema, opts);
+    const jsFn = v._jsFn;
+    if (!jsFn || !jsFn._hybridSource) return 'null';
+    // Hybrid body: return R on success, return E(d) on failure
+    // Inline E as the error function
+    const jsErrFn = compileToJSCodegenWithErrors(
+      typeof schema === 'string' ? JSON.parse(schema) : schema
+    );
+    const errBody = jsErrFn && jsErrFn._errSource
+      ? jsErrFn._errSource
+      : "return{valid:false,errors:[{code:'error',path:'',message:'validation failed'}]}";
+    return `(function(R){var E=function(d){var _all=true;${errBody}};return function(d){${jsFn._hybridSource}}})(${R})`;
+  });
+  return `'use strict';\nvar R=${R};\nmodule.exports=[${fns.join(',')}];\n`;
+};
+
 Validator.loadBundle = function(mods, schemas, opts) {
   return schemas.map((schema, i) => {
     if (mods[i]) return Validator.fromStandalone(mods[i], schema, opts);
