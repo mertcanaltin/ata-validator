@@ -11,10 +11,10 @@
         "<!@(node -p \"require('node-addon-api').include\")",
         "include",
         "deps/simdjson",
-        "<!@(node -e \"var p=process.platform,a=process.arch;if(p==='darwin'){console.log(a==='arm64'?'/opt/homebrew/opt/re2/include':'/usr/local/opt/re2/include');console.log(a==='arm64'?'/opt/homebrew/opt/abseil/include':'/usr/local/opt/abseil/include')}else{console.log('/usr/include')}\")"
+        "<!@(node -e \"var p=process.platform,a=process.arch;if(p==='darwin'){console.log(a==='arm64'?'/opt/homebrew/opt/re2/include':'/usr/local/opt/re2/include');console.log(a==='arm64'?'/opt/homebrew/opt/abseil/include':'/usr/local/opt/abseil/include');console.log(a==='arm64'?'/opt/homebrew/opt/mimalloc/include':'/usr/local/opt/mimalloc/include')}else{console.log('/usr/include')}\")"
       ],
       "libraries": [
-        "<!@(node -e \"var p=process.platform,a=process.arch;if(p==='darwin'){var pre=a==='arm64'?'/opt/homebrew/opt/re2':'/usr/local/opt/re2';console.log('-L'+pre+'/lib -lre2')}else{console.log('-lre2')}\")"
+        "<!@(node -e \"var p=process.platform,a=process.arch;if(p==='darwin'){var pre=a==='arm64'?'/opt/homebrew/opt/re2':'/usr/local/opt/re2';var mi=a==='arm64'?'/opt/homebrew/opt/mimalloc':'/usr/local/opt/mimalloc';console.log('-L'+pre+'/lib -lre2 -L'+mi+'/lib -lmimalloc')}else{console.log('-lre2')}\")"
       ],
       "dependencies": [
         "<!(node -p \"require('node-addon-api').gyp\")"
