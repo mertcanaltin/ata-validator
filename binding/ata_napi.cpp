@@ -1048,7 +1048,7 @@ static ThreadPool& pool() {
 
 // --- Fast Validation Registry ---
 // Global schema slots for V8 Fast API (bypasses NAPI overhead)
-static constexpr size_t MAX_FAST_SLOTS = 256;
+static constexpr size_t MAX_FAST_SLOTS = 4096;
 static ata::schema_ref g_fast_schemas[MAX_FAST_SLOTS];
 static std::string g_fast_schema_jsons[MAX_FAST_SLOTS];
 static uint32_t g_fast_slot_count = 0;
