@@ -219,9 +219,9 @@ class Validator {
       ? null
       : compileToJSCombined(schemaObj, VALID_RESULT);
     // Fallback error-collecting codegen (less optimized, for schemas combined can't handle)
-    const jsErrFn = (!jsCombinedFn && !process.env.ATA_FORCE_NAPI)
-      ? compileToJSCodegenWithErrors(schemaObj)
-      : null;
+    const jsErrFn = process.env.ATA_FORCE_NAPI
+      ? null
+      : compileToJSCodegenWithErrors(schemaObj);
     this._jsFn = jsFn;
 
     // Data mutators — applied in-place before validation
@@ -254,31 +254,22 @@ class Validator {
       // Valid data: no array allocation, returns VALID_RESULT
       // Invalid data: collects errors in one pass (no double validation)
       // Fallback: jsFn + errFn for schemas combined can't handle
-      const errFn = jsErrFn
-        ? (d) => { try { return jsErrFn(d, true); } catch { return compiled.validate(d); } }
-        : (d) => compiled.validate(d);
+      // errFn: JS error codegen or NAPI fallback. No try/catch (V8 3.3x deopt).
+      // jsErrFn tested at compile time — if it throws, don't use it.
+      let safeErrFn = null;
+      if (jsErrFn) {
+        try { jsErrFn({}, true); safeErrFn = (d) => jsErrFn(d, true); } catch {}
+      }
+      const errFn = safeErrFn || ((d) => compiled.validate(d));
 
-      // Combined validator — no try/catch in hot path.
-      // V8 TurboFan deoptimizes functions with try/catch (3.3x slower measured).
-      // Test combined once at compile time; if it works, use directly.
-      // Test combined with an empty object — safer than null for type:'object' schemas
-      let useCombined = !!jsCombinedFn;
-      if (useCombined) {
-        try { jsCombinedFn({}); } catch { useCombined = false; }
-      }
-      if (useCombined) {
-        this.validate = preprocess
-          ? (data) => { preprocess(data); return jsCombinedFn(data); }
-          : jsCombinedFn;
-      } else {
-        this.validate = preprocess
-          ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
-          : (data) => jsFn(data) ? VALID_RESULT : errFn(data);
-      }
+      // Speculative: jsFn (78M, pure bool) for valid path, errFn for errors.
+      // jsFn has zero error-path code — V8 fully optimizes it.
+      // No try/catch — V8 deoptimizes 3.3x with try/catch.
+      this.validate = preprocess
+        ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
+        : (data) => jsFn(data) ? VALID_RESULT : errFn(data);
       this.isValidObject = jsFn;
-      const jsonValidateFn = useCombined
-        ? jsCombinedFn
-        : (obj) => jsFn(obj) ? VALID_RESULT : errFn(obj);
+      const jsonValidateFn = (obj) => jsFn(obj) ? VALID_RESULT : errFn(obj);
       this.validateJSON = useSimdjsonForLarge
         ? (jsonStr) => {
             if (jsonStr.length >= SIMDJSON_THRESHOLD) {
