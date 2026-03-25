@@ -7,3 +7,4 @@ benchmark/package-lock.json
 *.node
 package-lock.json
 build_cmake/
+*.trace
