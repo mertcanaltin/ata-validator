@@ -257,16 +257,27 @@ class Validator {
       const errFn = jsErrFn
         ? (d) => { try { return jsErrFn(d, true); } catch { return compiled.validate(d); } }
         : (d) => compiled.validate(d);
-      this.validate = jsCombinedFn
-        ? (preprocess
-            ? (data) => { preprocess(data); try { return jsCombinedFn(data); } catch { return jsFn(data) ? VALID_RESULT : errFn(data); } }
-            : (data) => { try { return jsCombinedFn(data); } catch { return jsFn(data) ? VALID_RESULT : errFn(data); } })
-        : (preprocess
-            ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
-            : (data) => jsFn(data) ? VALID_RESULT : errFn(data));
+
+      // Combined validator — no try/catch in hot path.
+      // V8 TurboFan deoptimizes functions with try/catch (3.3x slower measured).
+      // Test combined once at compile time; if it works, use directly.
+      // Test combined with an empty object — safer than null for type:'object' schemas
+      let useCombined = !!jsCombinedFn;
+      if (useCombined) {
+        try { jsCombinedFn({}); } catch { useCombined = false; }
+      }
+      if (useCombined) {
+        this.validate = preprocess
+          ? (data) => { preprocess(data); return jsCombinedFn(data); }
+          : jsCombinedFn;
+      } else {
+        this.validate = preprocess
+          ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
+          : (data) => jsFn(data) ? VALID_RESULT : errFn(data);
+      }
       this.isValidObject = jsFn;
-      const jsonValidateFn = jsCombinedFn
-        ? (obj) => { try { return jsCombinedFn(obj); } catch { return jsFn(obj) ? VALID_RESULT : errFn(obj); } }
+      const jsonValidateFn = useCombined
+        ? jsCombinedFn
         : (obj) => jsFn(obj) ? VALID_RESULT : errFn(obj);
       this.validateJSON = useSimdjsonForLarge
         ? (jsonStr) => {
