@@ -1,6 +1,6 @@
 {
   "name": "ata-validator",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Ultra-fast JSON Schema validator. Beats ajv on every valid-path benchmark: 1.1x–2.7x faster validate(obj), 151x faster compilation, 5.9x faster parallel batch. Speculative validation with V8-optimized JS codegen, simdjson, multi-core. Standard Schema V1 compatible.",
   "main": "index.js",
   "types": "index.d.ts",
