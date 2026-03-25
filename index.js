@@ -503,25 +503,82 @@ Validator.bundle = function(schemas, opts) {
 };
 
 // Zero-dependency self-contained bundle — no require('ata-validator') needed at runtime.
-// Each entry is a function(d) that returns {valid:true,errors:[]} or {valid:false,errors:[...]}.
-// Fastify can use these directly without Validator class.
 Validator.bundleStandalone = function(schemas, opts) {
   const R = "Object.freeze({valid:true,errors:Object.freeze([])})";
   const fns = schemas.map(schema => {
     const v = new Validator(schema, opts);
     const jsFn = v._jsFn;
     if (!jsFn || !jsFn._hybridSource) return 'null';
-    // Hybrid body: return R on success, return E(d) on failure
-    // Inline E as the error function
     const jsErrFn = compileToJSCodegenWithErrors(
       typeof schema === 'string' ? JSON.parse(schema) : schema
     );
     const errBody = jsErrFn && jsErrFn._errSource
       ? jsErrFn._errSource
       : "return{valid:false,errors:[{code:'error',path:'',message:'validation failed'}]}";
-    return `(function(R){var E=function(d){var _all=true;${errBody}};return function(d){${jsFn._hybridSource}}})(${R})`;
+    return `(function(R){var E=function(d){var _all=true;${errBody}};return function(d){${jsFn._hybridSource}}})(R)`;
   });
   return `'use strict';\nvar R=${R};\nmodule.exports=[${fns.join(',')}];\n`;
+};
+
+// Compact bundle: deduplicated code. Shared template functions + per-schema params.
+// Much smaller file → faster V8 parse → faster startup.
+Validator.bundleCompact = function(schemas, opts) {
+  // Analyze schemas and group by structure
+  const entries = schemas.map(schema => {
+    const v = new Validator(schema, opts);
+    const jsFn = v._jsFn;
+    if (!jsFn || !jsFn._hybridSource) return null;
+    const jsErrFn = compileToJSCodegenWithErrors(
+      typeof schema === 'string' ? JSON.parse(schema) : schema
+    );
+    return {
+      hybrid: jsFn._hybridSource,
+      err: jsErrFn && jsErrFn._errSource ? jsErrFn._errSource : null,
+    };
+  });
+
+  // Deduplicate function bodies — many schemas produce identical or near-identical code
+  const bodyMap = new Map(); // body → index
+  const bodies = [];
+  const errMap = new Map();
+  const errBodies = [];
+
+  const indices = entries.map(e => {
+    if (!e) return [-1, -1];
+    let hi = bodyMap.get(e.hybrid);
+    if (hi === undefined) { hi = bodies.length; bodies.push(e.hybrid); bodyMap.set(e.hybrid, hi); }
+    let ei = -1;
+    if (e.err) {
+      ei = errMap.get(e.err);
+      if (ei === undefined) { ei = errBodies.length; errBodies.push(e.err); errMap.set(e.err, ei); }
+    }
+    return [hi, ei];
+  });
+
+  // Generate compact bundle
+  let out = "'use strict';\n";
+  out += "var R=Object.freeze({valid:true,errors:Object.freeze([])});\n";
+
+  // Shared hybrid factories
+  out += "var H=[\n";
+  out += bodies.map(b => `function(R,E){return function(d){${b}}}`).join(',\n');
+  out += "\n];\n";
+
+  // Shared error functions
+  out += "var EF=[\n";
+  out += errBodies.map(b => `function(d){var _all=true;${b}}`).join(',\n');
+  out += "\n];\n";
+
+  // Build validators from shared templates
+  out += "module.exports=[";
+  out += indices.map(([hi, ei]) => {
+    if (hi < 0) return 'null';
+    if (ei >= 0) return `H[${hi}](R,EF[${ei}])`;
+    return `H[${hi}](R,function(){return{valid:false,errors:[]}})`;
+  }).join(',');
+  out += "];\n";
+
+  return out;
 };
 
 Validator.loadBundle = function(mods, schemas, opts) {
