@@ -10,11 +10,11 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 76M ops/sec | 8M ops/sec | **ata 9.5x faster** |
-| **validate(obj)** invalid | 34M ops/sec | 8M ops/sec | **ata 4.3x faster** |
+| **validate(obj)** valid | 68M ops/sec | 8M ops/sec | **ata 8.5x faster** |
+| **validate(obj)** invalid | 17M ops/sec | 8M ops/sec | **ata 2.1x faster** |
 | **isValidObject(obj)** | 15.4M ops/sec | 9.2M ops/sec | **ata 1.7x faster** |
-| **validateJSON(str)** valid | 2.15M ops/sec | 1.88M ops/sec | **ata 1.1x faster** |
-| **validateJSON(str)** invalid | 2.17M ops/sec | 2.29M ops/sec | **ata 1.1x faster** |
+| **validateJSON(str)** valid | 3.0M ops/sec | 1.9M ops/sec | **ata 1.6x faster** |
+| **validateJSON(str)** invalid | 2.7M ops/sec | 2.3M ops/sec | **ata 1.2x faster** |
 | **Schema compilation** | 113K ops/sec | 818 ops/sec | **ata 138x faster** |
 
 > validate(obj) numbers are isolated single-schema benchmarks. Multi-schema benchmark overhead reduces throughput; real-world numbers depend on workload.
@@ -35,6 +35,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 | **ReDoS protection** (`^(a+)+$`) | 0.3ms | 765ms | **ata immune (RE2)** |
 | **Batch NDJSON** (10K items, multi-core) | 13.4M/sec | 5.1M/sec | **ata 2.6x faster** |
 | **Fastify HTTP** (100 users POST) | 24.6K req/sec | 22.6K req/sec | **ata 9% faster** |
+| **Fastify startup** (500 routes) | 46ms | 77ms (standalone) | **ata 1.7x faster** |
 
 > ata is faster than ajv on **every** benchmark — valid and invalid data, objects and JSON strings, single documents and parallel batches.
 
@@ -54,7 +55,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## When to use ata
 
-- **Any `validate(obj)` workload** — 4.3x–9.5x faster than ajv
+- **Any `validate(obj)` workload** — 2.1x–8.5x faster than ajv
 - **Serverless / cold starts** — 12.5x faster schema compilation
 - **Security-sensitive apps** — RE2 regex, immune to ReDoS attacks
 - **Batch/streaming validation** — NDJSON log processing, data pipelines (2.6x faster)
@@ -68,7 +69,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## Features
 
-- **Hybrid validator**: 76M ops/sec — same function body as boolean check, returns result or calls error collector. No try/catch, no double pass
+- **Hybrid validator**: 68M ops/sec — same function body as boolean check, returns result or calls error collector. No try/catch, no double pass
 - **Multi-core**: Parallel validation across all CPU cores — 13.4M validations/sec
 - **simdjson**: SIMD-accelerated JSON parsing at GB/s speeds, adaptive On Demand for large docs
 - **RE2 regex**: Linear-time guarantees, immune to ReDoS attacks (2391x faster on pathological input)
@@ -103,7 +104,7 @@ const v = new Validator({
   required: ['name', 'email']
 });
 
-// Fast boolean check — JS codegen (9.5x faster than ajv)
+// Fast boolean check — JS codegen (8.5x faster than ajv)
 v.isValidObject({ name: 'Mert', email: 'mert@example.com', age: 26 }); // true
 
 // Full validation with error details + defaults applied
@@ -131,6 +132,27 @@ const v = new Validator(schema, {
   removeAdditional: true,  // strip properties not in schema
 });
 ```
+
+### Standalone Pre-compilation
+
+Pre-compile schemas to JS files for near-zero startup. No native addon needed at runtime.
+
+```javascript
+const fs = require('fs');
+
+// Build phase (once)
+const v = new Validator(schema);
+fs.writeFileSync('./compiled.js', v.toStandalone());
+
+// Read phase (every startup) — 0.6μs per schema, pure JS
+const v2 = Validator.fromStandalone(require('./compiled.js'), schema);
+
+// Bundle multiple schemas — deduplicated, single file
+fs.writeFileSync('./bundle.js', Validator.bundleCompact(schemas));
+const validators = Validator.loadBundle(require('./bundle.js'), schemas);
+```
+
+**Fastify startup (500 routes): ajv standalone 77ms → ata standalone 46ms (1.7x faster)**
 
 ### Standard Schema V1
 
