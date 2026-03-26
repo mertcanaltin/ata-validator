@@ -28,7 +28,7 @@ using schema_node_ptr = std::shared_ptr<schema_node>;
 
 // MUST match layout in src/ata.cpp exactly (reinterpret_cast)
 struct schema_node {
-  std::vector<std::string> types;
+  uint8_t type_mask = 0;
 
   std::optional<double> minimum;
   std::optional<double> maximum;
@@ -67,11 +67,11 @@ struct schema_node {
   };
   std::vector<pattern_prop> pattern_properties;
 
-  std::optional<std::string> enum_values_raw;
   std::vector<std::string> enum_values_minified;
   std::optional<std::string> const_value_raw;
 
   std::optional<std::string> format;
+  uint8_t format_id = 255;
 
   std::vector<schema_node_ptr> all_of;
   std::vector<schema_node_ptr> any_of;
@@ -413,46 +413,39 @@ static void validate_napi(const schema_node_ptr& node,
 
   auto actual_type = napi_type_of(value);
 
-  // type
-  if (!node->types.empty()) {
-    bool match = false;
-    for (const auto& t : node->types) {
-      if (napi_type_matches(value, t)) {
-        match = true;
-        break;
-      }
-    }
-    if (!match) {
+  // type — uses bitmask matching ata.cpp json_type enum order:
+  //   0=string, 1=number, 2=integer, 3=boolean, 4=null_value, 5=object, 6=array
+  if (node->type_mask) {
+    uint8_t val_bits = 0;
+    if (actual_type == "string")       val_bits = 1u << 0;
+    else if (actual_type == "number")  val_bits = 1u << 1;
+    else if (actual_type == "integer") val_bits = (1u << 2) | (1u << 1); // integer matches number
+    else if (actual_type == "boolean") val_bits = 1u << 3;
+    else if (actual_type == "null")    val_bits = 1u << 4;
+    else if (actual_type == "object")  val_bits = 1u << 5;
+    else if (actual_type == "array")   val_bits = 1u << 6;
+    if (!(val_bits & node->type_mask)) {
+      static const char* type_names[] = {"string","number","integer","boolean","null","object","array"};
       std::string expected;
-      for (size_t i = 0; i < node->types.size(); ++i) {
-        if (i > 0) expected += ", ";
-        expected += node->types[i];
+      for (int b = 0; b < 7; ++b) {
+        if (node->type_mask & (1u << b)) {
+          if (!expected.empty()) expected += ", ";
+          expected += type_names[b];
+        }
       }
       errors.push_back({ata::error_code::type_mismatch, path,
                         "expected type " + expected + ", got " + actual_type});
     }
   }
 
-  // enum
-  if (node->enum_values_raw.has_value()) {
+  // enum — compare against pre-minified canonical values
+  if (!node->enum_values_minified.empty()) {
     std::string val_json = napi_to_json(env, value);
-    // Parse enum from raw and compare
     bool found = false;
-    // We need to compare against each element in the enum array
-    // The enum_values_raw is a JSON array string like [1,2,3]
-    // We'll use JSON.parse in JS to handle this
-    auto json_obj = env.Global().Get("JSON").As<Napi::Object>();
-    auto parse_fn = json_obj.Get("parse").As<Napi::Function>();
-    auto enum_arr = parse_fn.Call(json_obj,
-        {Napi::String::New(env, node->enum_values_raw.value())});
-    if (enum_arr.IsArray()) {
-      auto arr = enum_arr.As<Napi::Array>();
-      for (uint32_t i = 0; i < arr.Length(); ++i) {
-        std::string elem_json = napi_to_json(env, arr.Get(i));
-        if (elem_json == val_json) {
-          found = true;
-          break;
-        }
+    for (const auto& ev : node->enum_values_minified) {
+      if (ev == val_json) {
+        found = true;
+        break;
       }
     }
     if (!found) {

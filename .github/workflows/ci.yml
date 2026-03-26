@@ -23,7 +23,7 @@ jobs:
 
       - name: Install RE2 (macOS)
         if: runner.os == 'macOS'
-        run: brew install re2 abseil
+        run: brew install re2 abseil mimalloc
 
       - name: Install RE2 (Linux)
         if: runner.os == 'Linux'
