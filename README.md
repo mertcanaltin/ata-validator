@@ -19,7 +19,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 > validate(obj) numbers are isolated single-schema benchmarks. Multi-schema benchmark overhead reduces throughput; real-world numbers depend on workload.
 
-### Large Data — JS Object Validation
+### Large Data - JS Object Validation
 
 | Size | ata | ajv | |
 |---|---|---|---|
@@ -41,13 +41,13 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ### How it works
 
-**Hybrid validator**: ata compiles schemas into monolithic JS functions identical to the boolean fast path, but returning `VALID_RESULT` on success and calling the error collector on failure. V8 TurboFan optimizes it identically to a pure boolean function — error code is dead code on the valid path. No try/catch (3.3x V8 deopt), no lazy arrays, no double-pass.
+**Hybrid validator**: ata compiles schemas into monolithic JS functions identical to the boolean fast path, but returning `VALID_RESULT` on success and calling the error collector on failure. V8 TurboFan optimizes it identically to a pure boolean function - error code is dead code on the valid path. No try/catch (3.3x V8 deopt), no lazy arrays, no double-pass.
 
 **JS codegen**: Schemas are compiled to monolithic JS functions (like ajv). Supported keywords: `type`, `required`, `properties`, `items`, `enum`, `const`, `allOf`, `anyOf`, `oneOf`, `not`, `if/then/else`, `uniqueItems`, `contains`, `prefixItems`, `additionalProperties`, `dependentRequired`, `$ref` (local), `minimum/maximum`, `minLength/maxLength`, `pattern`, `format`.
 
 **V8 TurboFan optimizations**: Destructuring batch reads, `undefined` checks instead of `in` operator, context-aware type guard elimination, property hoisting to local variables, tiered uniqueItems (nested loop for small arrays).
 
-**Adaptive simdjson**: For large documents (>8KB) with selective schemas, simdjson On Demand seeks only the needed fields — skipping irrelevant data at GB/s speeds.
+**Adaptive simdjson**: For large documents (>8KB) with selective schemas, simdjson On Demand seeks only the needed fields - skipping irrelevant data at GB/s speeds.
 
 ### JSON Schema Test Suite
 
@@ -55,27 +55,27 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## When to use ata
 
-- **High-throughput `validate(obj)`** — 68M ops/sec valid, 17M ops/sec invalid
-- **Serverless / cold starts** — 12.5x faster schema compilation
-- **Security-sensitive apps** — RE2 regex, immune to ReDoS attacks
-- **Batch/streaming validation** — NDJSON log processing, data pipelines (2.6x faster)
-- **Standard Schema V1** — native support for Fastify v5, tRPC, TanStack
-- **C/C++ embedding** — native library, no JS runtime needed
+- **High-throughput `validate(obj)`** - 68M ops/sec valid, 17M ops/sec invalid
+- **Serverless / cold starts** - 12.5x faster schema compilation
+- **Security-sensitive apps** - RE2 regex, immune to ReDoS attacks
+- **Batch/streaming validation** - NDJSON log processing, data pipelines (2.6x faster)
+- **Standard Schema V1** - native support for Fastify v5, tRPC, TanStack
+- **C/C++ embedding** - native library, no JS runtime needed
 
 ## When to use ajv
 
-- **Schemas with `patternProperties`, `dependentSchemas`** — these bypass JS codegen and hit the slower NAPI path
-- **100% spec compliance needed** — ajv covers more edge cases (ata: 98.4%)
+- **Schemas with `patternProperties`, `dependentSchemas`** - these bypass JS codegen and hit the slower NAPI path
+- **100% spec compliance needed** - ajv covers more edge cases (ata: 98.4%)
 
 ## Features
 
-- **Hybrid validator**: 68M ops/sec — same function body as boolean check, returns result or calls error collector. No try/catch, no double pass
-- **Multi-core**: Parallel validation across all CPU cores — 13.4M validations/sec
+- **Hybrid validator**: 68M ops/sec - same function body as boolean check, returns result or calls error collector. No try/catch, no double pass
+- **Multi-core**: Parallel validation across all CPU cores - 13.4M validations/sec
 - **simdjson**: SIMD-accelerated JSON parsing at GB/s speeds, adaptive On Demand for large docs
 - **RE2 regex**: Linear-time guarantees, immune to ReDoS attacks (2391x faster on pathological input)
 - **V8-optimized codegen**: Destructuring batch reads, type guard elimination, property hoisting
 - **Standard Schema V1**: Compatible with Fastify, tRPC, TanStack, Drizzle
-- **Zero-copy paths**: Buffer and pre-padded input support — no unnecessary copies
+- **Zero-copy paths**: Buffer and pre-padded input support - no unnecessary copies
 - **Defaults + coercion**: `default` values, `coerceTypes`, `removeAdditional` support
 - **C/C++ library**: Native API for non-Node.js environments
 - **98.4% spec compliant**: Draft 2020-12
@@ -104,7 +104,7 @@ const v = new Validator({
   required: ['name', 'email']
 });
 
-// Fast boolean check — JS codegen, 68M ops/sec
+// Fast boolean check - JS codegen, 68M ops/sec
 v.isValidObject({ name: 'Mert', email: 'mert@example.com', age: 26 }); // true
 
 // Full validation with error details + defaults applied
@@ -118,7 +118,7 @@ v.isValidJSON('{"name": "Mert", "email": "mert@example.com"}'); // true
 // Buffer input (zero-copy, raw NAPI)
 v.isValid(Buffer.from('{"name": "Mert", "email": "mert@example.com"}'));
 
-// Parallel batch — multi-core, NDJSON, 13.4M items/sec
+// Parallel batch - multi-core, NDJSON, 13.4M items/sec
 const ndjson = Buffer.from(lines.join('\n'));
 v.isValidParallel(ndjson);  // bool[]
 v.countValid(ndjson);        // number
@@ -144,10 +144,10 @@ const fs = require('fs');
 const v = new Validator(schema);
 fs.writeFileSync('./compiled.js', v.toStandalone());
 
-// Read phase (every startup) — 0.6μs per schema, pure JS
+// Read phase (every startup) - 0.6μs per schema, pure JS
 const v2 = Validator.fromStandalone(require('./compiled.js'), schema);
 
-// Bundle multiple schemas — deduplicated, single file
+// Bundle multiple schemas - deduplicated, single file
 fs.writeFileSync('./bundle.js', Validator.bundleCompact(schemas));
 const validators = Validator.loadBundle(require('./bundle.js'), schemas);
 ```
