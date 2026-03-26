@@ -37,7 +37,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 | **Fastify HTTP** (100 users POST) | 24.6K req/sec | 22.6K req/sec | **ata 9% faster** |
 | **Fastify startup** (500 routes) | 46ms | 77ms (standalone) | **ata 1.7x faster** |
 
-> ata is faster than ajv on **every** benchmark — valid and invalid data, objects and JSON strings, single documents and parallel batches.
+> Isolated single-schema benchmarks. Results vary by workload and hardware.
 
 ### How it works
 
@@ -55,7 +55,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## When to use ata
 
-- **Any `validate(obj)` workload** — 2.1x–8.5x faster than ajv
+- **High-throughput `validate(obj)`** — 68M ops/sec valid, 17M ops/sec invalid
 - **Serverless / cold starts** — 12.5x faster schema compilation
 - **Security-sensitive apps** — RE2 regex, immune to ReDoS attacks
 - **Batch/streaming validation** — NDJSON log processing, data pipelines (2.6x faster)
@@ -104,7 +104,7 @@ const v = new Validator({
   required: ['name', 'email']
 });
 
-// Fast boolean check — JS codegen (8.5x faster than ajv)
+// Fast boolean check — JS codegen, 68M ops/sec
 v.isValidObject({ name: 'Mert', email: 'mert@example.com', age: 26 }); // true
 
 // Full validation with error details + defaults applied
@@ -118,7 +118,7 @@ v.isValidJSON('{"name": "Mert", "email": "mert@example.com"}'); // true
 // Buffer input (zero-copy, raw NAPI)
 v.isValid(Buffer.from('{"name": "Mert", "email": "mert@example.com"}'));
 
-// Parallel batch — multi-core, NDJSON (2.6x faster than ajv)
+// Parallel batch — multi-core, NDJSON, 13.4M items/sec
 const ndjson = Buffer.from(lines.join('\n'));
 v.isValidParallel(ndjson);  // bool[]
 v.countValid(ndjson);        // number
