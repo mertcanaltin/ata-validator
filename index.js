@@ -299,17 +299,21 @@ class Validator {
     const schemaObj = this._schemaObj;
     const options = this._options;
 
-    // Pure JS fast path -- no NAPI, runs in V8 JIT
-    // Set ATA_FORCE_NAPI=1 to disable JS codegen (for correctness testing)
-    const jsFn = process.env.ATA_FORCE_NAPI
-      ? null
-      : compileToJSCodegen(schemaObj) || compileToJS(schemaObj);
+    // Try combined first -- if it works, we skip codegen + error codegen
+    // Combined does validate + error collection in one pass
     const jsCombinedFn = process.env.ATA_FORCE_NAPI
       ? null
       : compileToJSCombined(schemaObj, VALID_RESULT);
-    const jsErrFn = process.env.ATA_FORCE_NAPI
-      ? null
-      : compileToJSCodegenWithErrors(schemaObj);
+
+    // Codegen (jsFn) is only needed for isValidObject and toStandalone.
+    // If combined works, defer codegen to _ensureCodegen() -- saves ~0.5ms
+    let jsFn = null;
+    let codegenDeferred = false;
+    if (jsCombinedFn) {
+      codegenDeferred = true;
+    } else if (!process.env.ATA_FORCE_NAPI) {
+      jsFn = compileToJSCodegen(schemaObj) || compileToJS(schemaObj);
+    }
     this._jsFn = jsFn;
 
     // Data mutators -- applied in-place before validation
@@ -344,49 +348,32 @@ class Validator {
           )));
     const useSimdjsonForLarge = !hasArrayTraversal;
 
-    if (jsFn) {
-      let safeErrFn = null;
-      if (jsErrFn) {
-        try {
-          jsErrFn({}, true);
-          safeErrFn = (d) => jsErrFn(d, true);
-        } catch {}
-      }
-      // errFn: use JS codegen if safe, else lazy-native fallback
-      const errFn =
-        safeErrFn ||
-        ((d) => {
-          this._ensureNative();
-          return this._compiled.validate(d);
-        });
+    // Try combined -- single pass, validates + collects errors
+    let safeCombinedFn = null;
+    if (jsCombinedFn) {
+      try {
+        const probe = {};
+        if (schemaObj && schemaObj.properties) {
+          for (const k of Object.keys(schemaObj.properties)) probe[k] = "";
+        }
+        if (schemaObj && schemaObj.if && schemaObj.if.properties) {
+          for (const k of Object.keys(schemaObj.if.properties)) probe[k] = "";
+        }
+        jsCombinedFn(probe);
+        jsCombinedFn({});
+        jsCombinedFn(null);
+        jsCombinedFn(0);
+        safeCombinedFn = jsCombinedFn;
+      } catch {}
+    }
 
-      // Best path: combined validator (single pass, validates + collects errors)
-      // Valid data: returns VALID_RESULT, no allocation
-      // Invalid data: collects errors in one pass (no double validation)
-      // Fallback: hybridFn or jsFn + errFn for schemas combined can't handle
-      // Test combined at compile time -- some schemas produce broken combined code
-      // Test combined at compile time -- some schemas (e.g. if/then/else)
-      // produce broken combined code that crashes on certain inputs.
-      // We probe with diverse data; if any throws, fall back to hybrid.
-      let safeCombinedFn = null;
-      if (jsCombinedFn) {
-        try {
-          const probe = {};
-          // Populate probe with one key per known property to trigger nested paths
-          if (schemaObj && schemaObj.properties) {
-            for (const k of Object.keys(schemaObj.properties)) probe[k] = "";
-          }
-          if (schemaObj && schemaObj.if && schemaObj.if.properties) {
-            for (const k of Object.keys(schemaObj.if.properties)) probe[k] = "";
-          }
-          jsCombinedFn(probe);
-          jsCombinedFn({});
-          jsCombinedFn(null);
-          jsCombinedFn(0);
-          safeCombinedFn = jsCombinedFn;
-        } catch {}
-      }
+    // If combined failed and codegen was deferred, compile it now
+    if (!safeCombinedFn && codegenDeferred && !process.env.ATA_FORCE_NAPI) {
+      jsFn = compileToJSCodegen(schemaObj) || compileToJS(schemaObj);
+      this._jsFn = jsFn;
+    }
 
+    if (safeCombinedFn || jsFn) {
       if (safeCombinedFn) {
         this.validate = preprocess
           ? (data) => {
@@ -395,6 +382,22 @@ class Validator {
             }
           : safeCombinedFn;
       } else {
+        // Combined failed -- fall back to hybrid with error codegen
+        const jsErrFn = compileToJSCodegenWithErrors(schemaObj);
+        let safeErrFn = null;
+        if (jsErrFn) {
+          try {
+            jsErrFn({}, true);
+            safeErrFn = (d) => jsErrFn(d, true);
+          } catch {}
+        }
+        const errFn =
+          safeErrFn ||
+          ((d) => {
+            this._ensureNative();
+            return this._compiled.validate(d);
+          });
+
         const hybridFn = jsFn._hybridFactory
           ? jsFn._hybridFactory(VALID_RESULT, errFn)
           : null;
@@ -412,13 +415,14 @@ class Validator {
               }
             : (data) => (jsFn(data) ? VALID_RESULT : errFn(data));
       }
-      this.isValidObject = jsFn;
-      const hybridFn = jsFn._hybridFactory
-        ? jsFn._hybridFactory(VALID_RESULT, errFn)
-        : null;
-      const jsonValidateFn = safeCombinedFn
-        || hybridFn
-        || ((obj) => (jsFn(obj) ? VALID_RESULT : errFn(obj)));
+      // isValidObject: use jsFn if available, else derive from combined
+      this.isValidObject = jsFn
+        ? jsFn
+        : (data) => {
+            this._ensureCodegen();
+            return this.isValidObject(data);
+          };
+      const jsonValidateFn = safeCombinedFn || this.validate;
       this.validateJSON = useSimdjsonForLarge
         ? (jsonStr) => {
             if (jsonStr.length >= SIMDJSON_THRESHOLD) {
@@ -445,6 +449,7 @@ class Validator {
             this._ensureNative();
             return this._compiled.validateJSON(jsonStr);
           };
+      const boolFn = jsFn || ((d) => safeCombinedFn ? safeCombinedFn(d).valid : false);
       this.isValidJSON = useSimdjsonForLarge
         ? (jsonStr) => {
             if (jsonStr.length >= SIMDJSON_THRESHOLD) {
@@ -455,7 +460,7 @@ class Validator {
               );
             }
             try {
-              return jsFn(JSON.parse(jsonStr));
+              return boolFn(JSON.parse(jsonStr));
             } catch (e) {
               if (!(e instanceof SyntaxError)) throw e;
               return false;
@@ -463,7 +468,7 @@ class Validator {
           }
         : (jsonStr) => {
             try {
-              return jsFn(JSON.parse(jsonStr));
+              return boolFn(JSON.parse(jsonStr));
             } catch (e) {
               if (!(e instanceof SyntaxError)) throw e;
               return false;
@@ -491,11 +496,20 @@ class Validator {
     this._fastSlot = native.fastRegister(this._schemaStr);
   }
 
+  _ensureCodegen() {
+    if (this._jsFn) return;
+    const schemaObj = this._schemaObj;
+    const jsFn = compileToJSCodegen(schemaObj) || compileToJS(schemaObj);
+    this._jsFn = jsFn;
+    if (jsFn) this.isValidObject = jsFn;
+  }
+
   // --- Standalone pre-compilation ---
   // Generate a JS module string that can be written to a file.
   // On next startup, load with Validator.fromStandalone() -- zero compile time.
   toStandalone() {
     this._ensureCompiled();
+    this._ensureCodegen();
     const jsFn = this._jsFn;
     if (!jsFn || !jsFn._source) return null;
     const src = jsFn._source;
@@ -706,6 +720,7 @@ Validator.bundleStandalone = function (schemas, opts) {
   const fns = schemas.map((schema) => {
     const v = new Validator(schema, opts);
     v._ensureCompiled();
+    v._ensureCodegen();
     const jsFn = v._jsFn;
     if (!jsFn || !jsFn._hybridSource) return "null";
     const jsErrFn = compileToJSCodegenWithErrors(
@@ -727,6 +742,7 @@ Validator.bundleCompact = function (schemas, opts) {
   const entries = schemas.map((schema) => {
     const v = new Validator(schema, opts);
     v._ensureCompiled();
+    v._ensureCodegen();
     const jsFn = v._jsFn;
     if (!jsFn || !jsFn._hybridSource) return null;
     const jsErrFn = compileToJSCodegenWithErrors(
