@@ -168,6 +168,36 @@ const ajvCompile = benchCompile("   ajv  compile", () => {
 });
 
 // ============================================================
+// 4. Constructor cold start (no validation)
+// ============================================================
+console.log("\n4. Constructor cold start (schema instantiation only):\n");
+
+const ataConstructor = benchCompile("   ata  new Validator(schema)", () => {
+  new Validator(schema);
+});
+const ajvConstructor = benchCompile("   ajv  new Ajv() + compile(schema)", () => {
+  const a = new Ajv({ allErrors: true });
+  addFormats(a);
+  a.compile(schema);
+});
+
+// ============================================================
+// 5. First validation (constructor + first validate call)
+// ============================================================
+console.log("\n5. First validation (constructor + first validate):\n");
+
+const ataFirstValidation = benchCompile("   ata  new Validator + validate(obj)", () => {
+  const v = new Validator(schema);
+  v.validate(validDoc);
+});
+const ajvFirstValidation = benchCompile("   ajv  new Ajv + compile + validate(obj)", () => {
+  const a = new Ajv({ allErrors: true });
+  addFormats(a);
+  const fn = a.compile(schema);
+  fn(validDoc);
+});
+
+// ============================================================
 // Summary
 // ============================================================
 console.log("\n==========================================================");
@@ -192,5 +222,10 @@ console.log("  " + ratio(ataFastValid, ajvFastJsonValid, "ata", "ajv"));
 
 console.log(`\n  Compilation:              ata ${Math.round(ataCompile).toLocaleString()} vs ajv ${Math.round(ajvCompile).toLocaleString()} ops/sec`);
 console.log("  " + ratio(ataCompile, ajvCompile, "ata", "ajv"));
+
+console.log(`\n  Constructor only:         ata ${Math.round(ataConstructor).toLocaleString()} vs ajv ${Math.round(ajvConstructor).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataConstructor, ajvConstructor, "ata", "ajv"));
+console.log(`\n  First validation:         ata ${Math.round(ataFirstValidation).toLocaleString()} vs ajv ${Math.round(ajvFirstValidation).toLocaleString()} ops/sec`);
+console.log("  " + ratio(ataFirstValidation, ajvFirstValidation, "ata", "ajv"));
 
 console.log();
