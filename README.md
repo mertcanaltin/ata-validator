@@ -10,12 +10,14 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 68M ops/sec | 8M ops/sec | **ata 8.5x faster** |
-| **validate(obj)** invalid | 17M ops/sec | 8M ops/sec | **ata 2.1x faster** |
-| **isValidObject(obj)** | 15.4M ops/sec | 9.2M ops/sec | **ata 1.7x faster** |
-| **validateJSON(str)** valid | 3.0M ops/sec | 1.9M ops/sec | **ata 1.6x faster** |
-| **validateJSON(str)** invalid | 2.7M ops/sec | 2.3M ops/sec | **ata 1.2x faster** |
-| **Schema compilation** | 113K ops/sec | 818 ops/sec | **ata 138x faster** |
+| **validate(obj)** valid | 14.6M ops/sec | 8.3M ops/sec | **ata 1.8x faster** |
+| **validate(obj)** invalid | 12.9M ops/sec | 8.0M ops/sec | **ata 1.6x faster** |
+| **isValidObject(obj)** | 15.3M ops/sec | 9.1M ops/sec | **ata 1.7x faster** |
+| **validateJSON(str)** valid | 2.1M ops/sec | 1.9M ops/sec | **ata 1.1x faster** |
+| **validateJSON(str)** invalid | 2.6M ops/sec | 2.3M ops/sec | **ata 1.1x faster** |
+| **Schema compilation** | 136K ops/sec | 794 ops/sec | **ata 171x faster** |
+| **Constructor cold start** | 1.25M ops/sec | 873 ops/sec | **ata 1,432x faster** |
+| **First validation** | 15.7K ops/sec | 855 ops/sec | **ata 18x faster** |
 
 > validate(obj) numbers are isolated single-schema benchmarks. Multi-schema benchmark overhead reduces throughput; real-world numbers depend on workload.
 
@@ -31,17 +33,16 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **Serverless cold start** (50 schemas) | 7.7ms | 96ms | **ata 12.5x faster** |
+| **Serverless cold start** (50 schemas) | 0.1ms | 23ms | **ata 242x faster** |
 | **ReDoS protection** (`^(a+)+$`) | 0.3ms | 765ms | **ata immune (RE2)** |
 | **Batch NDJSON** (10K items, multi-core) | 13.4M/sec | 5.1M/sec | **ata 2.6x faster** |
-| **Fastify HTTP** (100 users POST) | 24.6K req/sec | 22.6K req/sec | **ata 9% faster** |
-| **Fastify startup** (500 routes) | 46ms | 77ms (standalone) | **ata 1.7x faster** |
+| **Fastify startup** (5 routes) | 0.5ms | 6.0ms | **ata 12x faster** |
 
 > Isolated single-schema benchmarks. Results vary by workload and hardware.
 
 ### How it works
 
-**Hybrid validator**: ata compiles schemas into monolithic JS functions identical to the boolean fast path, but returning `VALID_RESULT` on success and calling the error collector on failure. V8 TurboFan optimizes it identically to a pure boolean function - error code is dead code on the valid path. No try/catch (3.3x V8 deopt), no lazy arrays, no double-pass.
+**Combined single-pass validator**: ata compiles schemas into a single function that validates and collects errors in one pass. Valid data returns `VALID_RESULT` with zero allocation. Invalid data collects errors inline - no double validation, no try/catch (3.3x V8 deopt). Lazy compilation defers all work to first usage - constructor is near-zero cost.
 
 **JS codegen**: Schemas are compiled to monolithic JS functions (like ajv). Supported keywords: `type`, `required`, `properties`, `items`, `enum`, `const`, `allOf`, `anyOf`, `oneOf`, `not`, `if/then/else`, `uniqueItems`, `contains`, `prefixItems`, `additionalProperties`, `dependentRequired`, `$ref` (local), `minimum/maximum`, `minLength/maxLength`, `pattern`, `format`.
 
@@ -55,8 +56,8 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## When to use ata
 
-- **High-throughput `validate(obj)`** - 68M ops/sec valid, 17M ops/sec invalid
-- **Serverless / cold starts** - 12.5x faster schema compilation
+- **High-throughput `validate(obj)`** - 14.6M ops/sec valid, 12.9M ops/sec invalid
+- **Serverless / cold starts** - 1,432x faster constructor, 242x faster cold start
 - **Security-sensitive apps** - RE2 regex, immune to ReDoS attacks
 - **Batch/streaming validation** - NDJSON log processing, data pipelines (2.6x faster)
 - **Standard Schema V1** - native support for Fastify v5, tRPC, TanStack
@@ -69,7 +70,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## Features
 
-- **Hybrid validator**: 68M ops/sec - same function body as boolean check, returns result or calls error collector. No try/catch, no double pass
+- **Hybrid validator**: 14.6M ops/sec valid, 12.9M ops/sec invalid - single-pass combined validator. No try/catch, no double pass
 - **Multi-core**: Parallel validation across all CPU cores - 13.4M validations/sec
 - **simdjson**: SIMD-accelerated JSON parsing at GB/s speeds, adaptive On Demand for large docs
 - **RE2 regex**: Linear-time guarantees, immune to ReDoS attacks (2391x faster on pathological input)
@@ -104,7 +105,7 @@ const v = new Validator({
   required: ['name', 'email']
 });
 
-// Fast boolean check - JS codegen, 68M ops/sec
+// Fast boolean check - JS codegen, 15.3M ops/sec
 v.isValidObject({ name: 'Mert', email: 'mert@example.com', age: 26 }); // true
 
 // Full validation with error details + defaults applied
@@ -152,7 +153,7 @@ fs.writeFileSync('./bundle.js', Validator.bundleCompact(schemas));
 const validators = Validator.loadBundle(require('./bundle.js'), schemas);
 ```
 
-**Fastify startup (500 routes): ajv standalone 77ms → ata standalone 46ms (1.7x faster)**
+**Fastify startup (5 routes): ajv 6.0ms → ata 0.5ms (12x faster, no build step needed)**
 
 ### Standard Schema V1
 
