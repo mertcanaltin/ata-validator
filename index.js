@@ -360,25 +360,65 @@ class Validator {
           return this._compiled.validate(d);
         });
 
+      // Best path: combined validator (single pass, validates + collects errors)
+      // Valid data: returns VALID_RESULT, no allocation
+      // Invalid data: collects errors in one pass (no double validation)
+      // Fallback: hybridFn or jsFn + errFn for schemas combined can't handle
+      // Test combined at compile time -- some schemas produce broken combined code
+      // Test combined at compile time -- some schemas (e.g. if/then/else)
+      // produce broken combined code that crashes on certain inputs.
+      // We probe with diverse data; if any throws, fall back to hybrid.
+      let safeCombinedFn = null;
+      if (jsCombinedFn) {
+        try {
+          const probe = {};
+          // Populate probe with one key per known property to trigger nested paths
+          if (schemaObj && schemaObj.properties) {
+            for (const k of Object.keys(schemaObj.properties)) probe[k] = "";
+          }
+          if (schemaObj && schemaObj.if && schemaObj.if.properties) {
+            for (const k of Object.keys(schemaObj.if.properties)) probe[k] = "";
+          }
+          jsCombinedFn(probe);
+          jsCombinedFn({});
+          jsCombinedFn(null);
+          jsCombinedFn(0);
+          safeCombinedFn = jsCombinedFn;
+        } catch {}
+      }
+
+      if (safeCombinedFn) {
+        this.validate = preprocess
+          ? (data) => {
+              preprocess(data);
+              return safeCombinedFn(data);
+            }
+          : safeCombinedFn;
+      } else {
+        const hybridFn = jsFn._hybridFactory
+          ? jsFn._hybridFactory(VALID_RESULT, errFn)
+          : null;
+        this.validate = hybridFn
+          ? preprocess
+            ? (data) => {
+                preprocess(data);
+                return hybridFn(data);
+              }
+            : hybridFn
+          : preprocess
+            ? (data) => {
+                preprocess(data);
+                return jsFn(data) ? VALID_RESULT : errFn(data);
+              }
+            : (data) => (jsFn(data) ? VALID_RESULT : errFn(data));
+      }
+      this.isValidObject = jsFn;
       const hybridFn = jsFn._hybridFactory
         ? jsFn._hybridFactory(VALID_RESULT, errFn)
         : null;
-      this.validate = hybridFn
-        ? preprocess
-          ? (data) => {
-              preprocess(data);
-              return hybridFn(data);
-            }
-          : hybridFn
-        : preprocess
-          ? (data) => {
-              preprocess(data);
-              return jsFn(data) ? VALID_RESULT : errFn(data);
-            }
-          : (data) => (jsFn(data) ? VALID_RESULT : errFn(data));
-      this.isValidObject = jsFn;
-      const jsonValidateFn =
-        hybridFn || ((obj) => (jsFn(obj) ? VALID_RESULT : errFn(obj)));
+      const jsonValidateFn = safeCombinedFn
+        || hybridFn
+        || ((obj) => (jsFn(obj) ? VALID_RESULT : errFn(obj)));
       this.validateJSON = useSimdjsonForLarge
         ? (jsonStr) => {
             if (jsonStr.length >= SIMDJSON_THRESHOLD) {
