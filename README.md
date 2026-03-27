@@ -10,14 +10,12 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 14.6M ops/sec | 8.3M ops/sec | **ata 1.8x faster** |
-| **validate(obj)** invalid | 12.9M ops/sec | 8.0M ops/sec | **ata 1.6x faster** |
-| **isValidObject(obj)** | 15.3M ops/sec | 9.1M ops/sec | **ata 1.7x faster** |
-| **validateJSON(str)** valid | 2.1M ops/sec | 1.9M ops/sec | **ata 1.1x faster** |
-| **validateJSON(str)** invalid | 2.6M ops/sec | 2.3M ops/sec | **ata 1.1x faster** |
-| **Schema compilation** | 136K ops/sec | 794 ops/sec | **ata 171x faster** |
-| **Constructor cold start** | 1.25M ops/sec | 873 ops/sec | **ata 1,432x faster** |
-| **First validation** | 15.7K ops/sec | 855 ops/sec | **ata 18x faster** |
+| **validate(obj)** valid | 15.8M ops/sec | 19.3M ops/sec | ajv 1.2x faster |
+| **validate(obj)** invalid | 15.0M ops/sec | 13.0M ops/sec | **ata 1.2x faster** |
+| **validateJSON(str)** valid | 2.4M ops/sec | 2.4M ops/sec | equal |
+| **Schema compilation** | 142K ops/sec | 827 ops/sec | **ata 171x faster** |
+| **Constructor cold start** | 1.49M ops/sec | 881 ops/sec | **ata 1,695x faster** |
+| **First validation** | 75.8K ops/sec | 884 ops/sec | **ata 86x faster** |
 
 > validate(obj) numbers are isolated single-schema benchmarks. Multi-schema benchmark overhead reduces throughput; real-world numbers depend on workload.
 
@@ -56,8 +54,8 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## When to use ata
 
-- **High-throughput `validate(obj)`** - 14.6M ops/sec valid, 12.9M ops/sec invalid
-- **Serverless / cold starts** - 1,432x faster constructor, 242x faster cold start
+- **High-throughput `validate(obj)`** - 15.8M ops/sec valid, 15.0M ops/sec invalid
+- **Serverless / cold starts** - 1,695x faster constructor, 86x faster first validation
 - **Security-sensitive apps** - RE2 regex, immune to ReDoS attacks
 - **Batch/streaming validation** - NDJSON log processing, data pipelines (2.6x faster)
 - **Standard Schema V1** - native support for Fastify v5, tRPC, TanStack
@@ -70,7 +68,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## Features
 
-- **Hybrid validator**: 14.6M ops/sec valid, 12.9M ops/sec invalid - single-pass combined validator. No try/catch, no double pass
+- **Combined validator**: 15.8M ops/sec valid, 15.0M ops/sec invalid - single-pass, validates + collects errors in one pass. No try/catch, no double pass
 - **Multi-core**: Parallel validation across all CPU cores - 13.4M validations/sec
 - **simdjson**: SIMD-accelerated JSON parsing at GB/s speeds, adaptive On Demand for large docs
 - **RE2 regex**: Linear-time guarantees, immune to ReDoS attacks (2391x faster on pathological input)
