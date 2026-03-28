@@ -205,6 +205,9 @@ function collectRemovals(schema, actions, path) {
   }
 }
 
+// Schema compilation cache: same schema string -> reuse compiled functions
+const _codegenCache = new Map();
+
 const SIMDJSON_PADDING = 64;
 const VALID_RESULT = Object.freeze({ valid: true, errors: Object.freeze([]) });
 
@@ -254,7 +257,7 @@ class Validator {
       return this.validate(data);
     };
     this.isValidObject = (data) => {
-      this._ensureCompiled();
+      this._ensureCodegen();
       return this.isValidObject(data);
     };
     this.validateJSON = (jsonStr) => {
@@ -489,6 +492,23 @@ class Validator {
     this._nativeReady = true;
     this._compiled = new native.CompiledSchema(this._schemaStr);
     this._fastSlot = native.fastRegister(this._schemaStr);
+  }
+
+  _ensureCodegen() {
+    if (this._jsFn) return;
+    if (process.env.ATA_FORCE_NAPI) return;
+    const cached = _codegenCache.get(this._schemaStr);
+    if (cached) {
+      this._jsFn = cached;
+      this.isValidObject = cached;
+      return;
+    }
+    const jsFn = compileToJSCodegen(this._schemaObj) || compileToJS(this._schemaObj);
+    this._jsFn = jsFn;
+    if (jsFn) {
+      this.isValidObject = jsFn;
+      _codegenCache.set(this._schemaStr, jsFn);
+    }
   }
 
   // --- Standalone pre-compilation ---

@@ -58,7 +58,7 @@ test("isValidObject() triggers compilation", () => {
   const v = new Validator(schema);
   const result = v.isValidObject({ id: 1, name: "test" });
   assert(result === true, "valid doc should return true");
-  assert(v._initialized === true, "_initialized should be true after isValidObject");
+  assert(v._jsFn !== null, "codegen should be compiled after isValidObject");
 });
 
 test("validateJSON() triggers compilation", () => {
