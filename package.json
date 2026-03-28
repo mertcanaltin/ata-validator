@@ -63,6 +63,7 @@
     "node-gyp-build": "^4.8.4"
   },
   "devDependencies": {
+    "@sinclair/typebox": "^0.34.49",
     "node-gyp": "^11.0.0",
     "prebuildify": "^6.0.1"
   },
