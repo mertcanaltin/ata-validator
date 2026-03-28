@@ -206,7 +206,7 @@ function collectRemovals(schema, actions, path) {
 }
 
 // Schema compilation cache: same schema string -> reuse compiled functions
-const _codegenCache = new Map();
+const _compileCache = new Map();
 
 const SIMDJSON_PADDING = 64;
 const VALID_RESULT = Object.freeze({ valid: true, errors: Object.freeze([]) });
@@ -302,17 +302,21 @@ class Validator {
     const schemaObj = this._schemaObj;
     const options = this._options;
 
-    // Pure JS fast path -- no NAPI, runs in V8 JIT
-    // Set ATA_FORCE_NAPI=1 to disable JS codegen (for correctness testing)
-    const jsFn = process.env.ATA_FORCE_NAPI
-      ? null
-      : compileToJSCodegen(schemaObj) || compileToJS(schemaObj);
-    const jsCombinedFn = process.env.ATA_FORCE_NAPI
-      ? null
-      : compileToJSCombined(schemaObj, VALID_RESULT);
-    const jsErrFn = process.env.ATA_FORCE_NAPI
-      ? null
-      : compileToJSCodegenWithErrors(schemaObj);
+    // Check cache first -- reuse compiled functions for same schema
+    const cached = _compileCache.get(this._schemaStr);
+    let jsFn, jsCombinedFn, jsErrFn;
+    if (cached && !process.env.ATA_FORCE_NAPI) {
+      jsFn = cached.jsFn;
+      jsCombinedFn = cached.combined;
+      jsErrFn = cached.errFn;
+    } else if (!process.env.ATA_FORCE_NAPI) {
+      jsFn = compileToJSCodegen(schemaObj) || compileToJS(schemaObj);
+      jsCombinedFn = compileToJSCombined(schemaObj, VALID_RESULT);
+      jsErrFn = compileToJSCodegenWithErrors(schemaObj);
+      _compileCache.set(this._schemaStr, { jsFn, combined: jsCombinedFn, errFn: jsErrFn });
+    } else {
+      jsFn = null; jsCombinedFn = null; jsErrFn = null;
+    }
     this._jsFn = jsFn;
 
     // Data mutators -- applied in-place before validation
@@ -497,17 +501,19 @@ class Validator {
   _ensureCodegen() {
     if (this._jsFn) return;
     if (process.env.ATA_FORCE_NAPI) return;
-    const cached = _codegenCache.get(this._schemaStr);
-    if (cached) {
-      this._jsFn = cached;
-      this.isValidObject = cached;
+    const cached = _compileCache.get(this._schemaStr);
+    if (cached && cached.jsFn) {
+      this._jsFn = cached.jsFn;
+      this.isValidObject = cached.jsFn;
       return;
     }
     const jsFn = compileToJSCodegen(this._schemaObj) || compileToJS(this._schemaObj);
     this._jsFn = jsFn;
     if (jsFn) {
       this.isValidObject = jsFn;
-      _codegenCache.set(this._schemaStr, jsFn);
+      // seed cache with codegen, combined/errFn filled later by _ensureCompiled
+      if (!cached) _compileCache.set(this._schemaStr, { jsFn, combined: null, errFn: null });
+      else cached.jsFn = jsFn;
     }
   }
 
