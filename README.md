@@ -2,7 +2,7 @@
 
 Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjson/simdjson). Multi-core parallel validation, RE2 regex, codegen bytecode engine. Standard Schema V1 compatible.
 
-**[ata-validator.com](https://ata-validator.com)**
+**[ata-validator.com](https://ata-validator.com)** | **[API Docs](docs/API.md)** | **[Contributing](CONTRIBUTING.md)**
 
 ## Performance
 
