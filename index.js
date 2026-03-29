@@ -1,4 +1,4 @@
-const native = require("node-gyp-build")(__dirname);
+const native = require("pkg-prebuilds")(__dirname, require("./binding-options"));
 const {
   compileToJS,
   compileToJSCodegen,

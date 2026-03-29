@@ -4,6 +4,8 @@ project(ata VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 option(ATA_TESTING "Build test suite" ON)
 option(ATA_BENCHMARKS "Build benchmarks" OFF)
 option(ATA_SANITIZE "Enable address sanitizer" OFF)
@@ -41,14 +43,23 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(abseil-cpp)
 FetchContent_MakeAvailable(simdjson re2)
 
+include_directories(${CMAKE_JS_INC})
+file(GLOB SOURCE_FILES "binding/*.cpp" "src/*.cpp" "deps/simdjson/*.cpp")
+
 # Core library
-add_library(ata
-  src/ata.cpp
-  src/ata_c.cpp
-)
-target_include_directories(ata PUBLIC include)
-target_link_libraries(ata PRIVATE simdjson re2)
+add_library(${PROJECT_NAME} SHARED ${SOURCE_FILES} ${CMAKE_JS_SRC})
+target_include_directories(${PROJECT_NAME} PUBLIC include)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_JS_INC})
+target_link_libraries(${PROJECT_NAME} PRIVATE simdjson re2)
+target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
+set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "" SUFFIX ".node")
+
 add_library(ata::ata ALIAS ata)
+
+if(MSVC AND CMAKE_JS_NODELIB_DEF AND CMAKE_JS_NODELIB_TARGET)
+  # Generate node.lib
+  execute_process(COMMAND ${CMAKE_AR} /def:${CMAKE_JS_NODELIB_DEF} /out:${CMAKE_JS_NODELIB_TARGET} ${CMAKE_STATIC_LINKER_FLAGS})
+endif()
 
 if(ATA_SANITIZE)
   target_compile_options(ata PRIVATE -fsanitize=address -fno-omit-frame-pointer)
