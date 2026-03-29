@@ -1,6 +1,7 @@
 const { bench, group, run, summary, do_not_optimize } = require('mitata')
 const { Validator } = require('../index')
-const native = require('node-gyp-build')(require('path').resolve(__dirname, '..'))
+const native = require("pkg-prebuilds")(__dirname, require("./binding-options"));
+
 const Ajv = require('ajv')
 const addFormats = require('ajv-formats')
 
