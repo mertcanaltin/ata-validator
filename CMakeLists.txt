@@ -4,6 +4,8 @@ project(ata VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 option(ATA_TESTING "Build test suite" ON)
 option(ATA_BENCHMARKS "Build benchmarks" OFF)
 option(ATA_SANITIZE "Enable address sanitizer" OFF)
@@ -53,6 +55,11 @@ target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "" SUFFIX ".node")
 
 add_library(ata::ata ALIAS ata)
+
+if(MSVC AND CMAKE_JS_NODELIB_DEF AND CMAKE_JS_NODELIB_TARGET)
+  # Generate node.lib
+  execute_process(COMMAND ${CMAKE_AR} /def:${CMAKE_JS_NODELIB_DEF} /out:${CMAKE_JS_NODELIB_TARGET} ${CMAKE_STATIC_LINKER_FLAGS})
+endif()
 
 if(ATA_SANITIZE)
   target_compile_options(ata PRIVATE -fsanitize=address -fno-omit-frame-pointer)
