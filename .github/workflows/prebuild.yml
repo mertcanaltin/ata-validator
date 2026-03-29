@@ -58,7 +58,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --ignore-scripts
 
       - name: Download all prebuilds
         uses: actions/download-artifact@v4
