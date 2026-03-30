@@ -5,6 +5,7 @@ const {
   compileToJSCodegenWithErrors,
   compileToJSCombined,
 } = require("./lib/js-compiler");
+const { normalizeDraft7 } = require("./lib/draft7");
 
 // Extract default values from a schema tree. Returns a function that applies
 // defaults to an object in-place (mutates), or null if no defaults exist.
@@ -285,6 +286,23 @@ function createPaddedBuffer(jsonStr) {
   return { buffer: padded, length: jsonBuf.length };
 }
 
+function buildSchemaMap(schemas) {
+  if (!schemas) return null
+  const map = new Map()
+  if (Array.isArray(schemas)) {
+    for (const s of schemas) {
+      const id = s.$id
+      if (!id) throw new Error('Schema in schemas option must have $id')
+      map.set(id, s)
+    }
+  } else {
+    for (const [key, s] of Object.entries(schemas)) {
+      map.set(s.$id || key, s)
+    }
+  }
+  return map
+}
+
 class Validator {
   constructor(schema, opts) {
     const options = opts || {};
@@ -302,6 +320,9 @@ class Validator {
     this._jsFn = null;
     this._preprocess = null;
     this._applyDefaults = null;
+
+    // Schema map for cross-schema $ref resolution
+    this._schemaMap = buildSchemaMap(options.schemas) || new Map();
 
     // Lazy stubs: trigger compilation on first call, then re-dispatch
     this.validate = (data) => {
@@ -557,6 +578,18 @@ class Validator {
     this._nativeReady = true;
     this._compiled = new native.CompiledSchema(this._schemaStr);
     this._fastSlot = native.fastRegister(this._schemaStr);
+  }
+
+  addSchema(schema) {
+    if (this._initialized) {
+      throw new Error('Cannot add schema after compilation — call addSchema() before validate()')
+    }
+    if (!schema || !schema.$id) {
+      throw new Error('Schema must have $id')
+    }
+    // Apply Draft 7 normalization if needed
+    normalizeDraft7(schema)
+    this._schemaMap.set(schema.$id, schema)
   }
 
   _ensureCodegen() {
