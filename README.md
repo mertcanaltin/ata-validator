@@ -6,37 +6,43 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## Performance
 
-### Single-Document Validation
+### Simple Schema (5 properties, type + format + range checks)
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 117M ops/sec | 27M ops/sec | **ata 4.3x faster** |
-| **validate(obj)** invalid | 16M ops/sec | 9.9M ops/sec | **ata 1.6x faster** |
-| **isValidObject(obj)** | 117M ops/sec | 27M ops/sec | **ata 4.3x faster** |
-| **Schema compilation** | 2.1M ops/sec | 877 ops/sec | **ata 2,443x faster** |
-| **First validation** | 763K ops/sec | 943 ops/sec | **ata 812x faster** |
+| **validate(obj)** valid | 58ns | 101ns | **ata 1.7x faster** |
+| **validate(obj)** invalid | 78ns | 109ns | **ata 1.4x faster** |
+| **isValidObject(obj)** | 28ns | 101ns | **ata 3.6x faster** |
+| **Schema compilation** | 677ns | 1.28ms | **ata 1,888x faster** |
+| **First validation** | 1.70μs | 1.18ms | **ata 693x faster** |
 
-> Measured with [mitata](https://github.com/evanwashere/mitata) (process-isolated). Results vary by workload and hardware.
+### Complex Schema (patternProperties + dependentSchemas + propertyNames + additionalProperties)
 
-### vs typebox 1.x (with format: 'email')
-
-| Scenario | ata | typebox | |
+| Scenario | ata | ajv | |
 |---|---|---|---|
-| **isValidObject(obj)** valid | 90.9M ops/sec | 18.2M ops/sec | **ata 5.0x faster** |
-| **isValidObject(obj)** invalid | 435M ops/sec | 169M ops/sec | **ata 2.6x faster** |
-| **Schema compilation** | 2.0M ops/sec | 18.5K ops/sec | **ata 110x faster** |
-| **First validation** | 1.55M ops/sec | 18.2K ops/sec | **ata 85x faster** |
+| **validate(obj)** valid | 26ns | 113ns | **ata 4.4x faster** |
+| **validate(obj)** invalid | 53ns | 195ns | **ata 3.7x faster** |
+| **isValidObject(obj)** | 20ns | 117ns | **ata 5.8x faster** |
 
-> typebox 1.x is JSON Schema compliant with RFC format support. [Benchmark code](benchmark/bench_vs_typebox_esm.mjs)
+### Cross-Schema `$ref` (multi-schema with `$id` registry)
 
-### vs ecosystem (Zod, Valibot, TypeBox)
+| Scenario | ata | ajv | |
+|---|---|---|---|
+| **validate(obj)** valid | 17ns | 25ns | **ata 1.5x faster** |
+| **validate(obj)** invalid | 34ns | 54ns | **ata 1.6x faster** |
+
+> Measured with [mitata](https://github.com/evanwashere/mitata) on Apple M4 Pro (process-isolated). [Benchmark code](benchmark/bench_complex_mitata.mjs)
+
+### vs Ecosystem (Zod, Valibot, TypeBox)
 
 | Scenario | ata | ajv | typebox | zod | valibot |
 |---|---|---|---|---|---|
-| **Simple schema** | **12ns** | 37ns | 47ns | 430ns | 304ns |
-| **Complex schema** (nested + array + pattern) | **26ns** | 51ns | 72ns | 471ns | 683ns |
+| **validate (valid)** | **13ns** | 37ns | 48ns | 328ns | 316ns |
+| **validate (invalid)** | **35ns** | 104ns | 4ns | 11.7μs | 838ns |
+| **compilation** | **533ns** | 1.14ms | 52μs | — | — |
+| **first validation** | **1.3μs** | 1.07ms | 53μs | — | — |
 
-> Different categories: ata/typebox are JSON Schema validators, zod/valibot are schema-builder DSLs. [Benchmark code](benchmark/bench_vs_ecosystem.mjs)
+> Different categories: ata/ajv/typebox are JSON Schema validators, zod/valibot are schema-builder DSLs. [Benchmark code](benchmark/bench_all_mitata.mjs)
 
 ### Large Data - JS Object Validation
 
@@ -59,11 +65,11 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ### How it works
 
-**Combined single-pass validator**: ata compiles schemas into a single function that validates and collects errors in one pass. Valid data returns `VALID_RESULT` with zero allocation. Invalid data collects errors inline - no double validation, no try/catch (3.3x V8 deopt). Lazy compilation defers all work to first usage - constructor is near-zero cost.
+**Combined single-pass validator**: ata compiles schemas into a single function that validates and collects errors in one pass. Valid data returns `VALID_RESULT` with zero allocation. Invalid data collects errors inline with pre-allocated frozen error objects - no double validation, no try/catch (3.3x V8 deopt). Lazy compilation defers all work to first usage - constructor is near-zero cost.
 
-**JS codegen**: Schemas are compiled to monolithic JS functions (like ajv). Supported keywords: `type`, `required`, `properties`, `items`, `enum`, `const`, `allOf`, `anyOf`, `oneOf`, `not`, `if/then/else`, `uniqueItems`, `contains`, `prefixItems`, `additionalProperties`, `dependentRequired`, `$ref` (local), `minimum/maximum`, `minLength/maxLength`, `pattern`, `format`.
+**JS codegen**: Schemas are compiled to monolithic JS functions (like ajv). Full keyword support including `patternProperties`, `dependentSchemas`, `propertyNames`, cross-schema `$ref` with `$id` registry, and Draft 7 auto-detection. charCodeAt prefix matching replaces regex for simple patterns (4x faster). Merged key iteration loops (patternProperties + propertyNames + additionalProperties in a single `for..in`).
 
-**V8 TurboFan optimizations**: Destructuring batch reads, `undefined` checks instead of `in` operator, context-aware type guard elimination, property hoisting to local variables, tiered uniqueItems (nested loop for small arrays).
+**V8 TurboFan optimizations**: Destructuring batch reads, `undefined` checks instead of `in` operator, context-aware type guard elimination, property hoisting to local variables, tiered uniqueItems (nested loop for small arrays), inline key comparison for small property sets (no Set.has overhead).
 
 **Adaptive simdjson**: For large documents (>8KB) with selective schemas, simdjson On Demand seeks only the needed fields - skipping irrelevant data at GB/s speeds.
 
@@ -73,8 +79,11 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## When to use ata
 
-- **High-throughput `validate(obj)`** - 4.3x faster than ajv, 42x faster than zod
-- **Serverless / cold starts** - 2,443x faster compilation, 812x faster first validation
+- **High-throughput `validate(obj)`** - 4.4x faster than ajv on complex schemas, 26x faster than zod
+- **Complex schemas** - `patternProperties`, `dependentSchemas`, `propertyNames` all inline JS codegen (5.8x faster than ajv)
+- **Multi-schema projects** - cross-schema `$ref` with `$id` registry, `addSchema()` API
+- **Draft 7 migration** - auto-detects `$schema`, normalizes Draft 7 keywords transparently
+- **Serverless / cold starts** - 1,888x faster compilation, 693x faster first validation
 - **Security-sensitive apps** - RE2 regex, immune to ReDoS attacks
 - **Batch/streaming validation** - NDJSON log processing, data pipelines (2.6x faster)
 - **Standard Schema V1** - native support for Fastify v5, tRPC, TanStack
@@ -82,12 +91,14 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## When to use ajv
 
-- **Schemas with `patternProperties`, `dependentSchemas`** - these bypass JS codegen and hit the slower NAPI path
 - **100% spec compliance needed** - ajv covers more edge cases (ata: 98.4%)
+- **`$dynamicRef` / `unevaluatedProperties`** - not yet supported in ata
 
 ## Features
 
-- **Hybrid validator**: 4.3x faster than ajv valid, 1.6x faster invalid - codegen + single-pass error collection. No try/catch, no double pass. Schema compilation cache for repeated schemas
+- **Single-pass validator**: 4.4x faster than ajv valid, 3.7x faster invalid - combined codegen with pre-allocated errors. No double pass, no try/catch. Schema compilation cache for repeated schemas
+- **Cross-schema `$ref`**: `schemas` option and `addSchema()` API. Compile-time resolution with `$id` registry, zero runtime overhead
+- **Draft 7 support**: Auto-detects `$schema` field, normalizes `dependencies`/`additionalItems`/`definitions` transparently
 - **Multi-core**: Parallel validation across all CPU cores - 13.4M validations/sec
 - **simdjson**: SIMD-accelerated JSON parsing at GB/s speeds, adaptive On Demand for large docs
 - **RE2 regex**: Linear-time guarantees, immune to ReDoS attacks (2391x faster on pathological input)
@@ -142,12 +153,36 @@ v.isValidParallel(ndjson);  // bool[]
 v.countValid(ndjson);        // number
 ```
 
+### Cross-Schema `$ref`
+
+```javascript
+const addressSchema = {
+  $id: 'https://example.com/address',
+  type: 'object',
+  properties: { street: { type: 'string' }, city: { type: 'string' } },
+  required: ['street', 'city']
+};
+
+const v = new Validator({
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    address: { $ref: 'https://example.com/address' }
+  }
+}, { schemas: [addressSchema] });
+
+// Or use addSchema()
+const v2 = new Validator(mainSchema);
+v2.addSchema(addressSchema);
+```
+
 ### Options
 
 ```javascript
 const v = new Validator(schema, {
   coerceTypes: true,       // "42" → 42 for integer fields
   removeAdditional: true,  // strip properties not in schema
+  schemas: [otherSchema],  // cross-schema $ref registry
 });
 ```
 
