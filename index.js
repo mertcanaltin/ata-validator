@@ -475,15 +475,10 @@ class Validator {
         } catch {}
       }
 
-      if (safeCombinedFn && jsFn) {
-        // fast path: jsFn boolean check first, combined only on failure
-        this.validate = preprocess
-          ? (data) => {
-              preprocess(data);
-              return jsFn(data) ? VALID_RESULT : safeCombinedFn(data);
-            }
-          : (data) => jsFn(data) ? VALID_RESULT : safeCombinedFn(data);
-      } else if (safeCombinedFn) {
+      if (safeCombinedFn) {
+        // Single-pass: combined handles both valid (returns VALID_RESULT) and invalid
+        // (collects errors) in one pass. Error objects are pre-allocated as closure
+        // variables so the valid path has near-zero overhead.
         this.validate = preprocess
           ? (data) => {
               preprocess(data);
