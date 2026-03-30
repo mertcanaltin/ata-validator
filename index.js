@@ -306,9 +306,12 @@ function buildSchemaMap(schemas) {
 class Validator {
   constructor(schema, opts) {
     const options = opts || {};
-    const schemaStr =
-      typeof schema === "string" ? schema : JSON.stringify(schema);
     const schemaObj = typeof schema === "string" ? JSON.parse(schema) : schema;
+
+    // Draft 7 normalization — convert keywords to 2020-12 equivalents in-place
+    normalizeDraft7(schemaObj);
+
+    const schemaStr = JSON.stringify(schemaObj);
 
     this._schemaStr = schemaStr;
     this._schemaObj = schemaObj;
