@@ -12,6 +12,7 @@ export interface ValidationResult {
 export interface ValidatorOptions {
   coerceTypes?: boolean;
   removeAdditional?: boolean;
+  schemas?: Record<string, object> | object[];
 }
 
 export interface StandardSchemaV1Props {
@@ -26,6 +27,9 @@ export interface StandardSchemaV1Props {
 
 export class Validator {
   constructor(schema: object | string, options?: ValidatorOptions);
+
+  /** Add a schema to the validator */
+  addSchema(schema: object): void;
 
   /** Validate data — returns result with errors. Applies defaults, coerceTypes, removeAdditional. */
   validate(data: unknown): ValidationResult;
