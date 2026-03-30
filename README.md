@@ -29,6 +29,15 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 > typebox 1.x is JSON Schema compliant with RFC format support. [Benchmark code](benchmark/bench_vs_typebox_esm.mjs)
 
+### vs ecosystem (Zod, Valibot, TypeBox)
+
+| Scenario | ata | zod | valibot | typebox |
+|---|---|---|---|---|
+| **validate (valid)** | **12ns** | 275ns | 329ns | 47ns |
+| **boolean check (valid)** | **7.8ns** | 280ns | 298ns | 47ns |
+
+> Different categories: ata/typebox are JSON Schema validators, zod/valibot are schema-builder DSLs. [Benchmark code](benchmark/bench_vs_ecosystem.mjs)
+
 ### Large Data - JS Object Validation
 
 | Size | ata | ajv | |
