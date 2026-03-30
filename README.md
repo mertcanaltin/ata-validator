@@ -31,10 +31,10 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ### vs ecosystem (Zod, Valibot, TypeBox)
 
-| Scenario | ata | zod | valibot | typebox |
-|---|---|---|---|---|
-| **validate (valid)** | **12ns** | 275ns | 329ns | 47ns |
-| **boolean check (valid)** | **7.8ns** | 280ns | 298ns | 47ns |
+| Scenario | ata | ajv | typebox | zod | valibot |
+|---|---|---|---|---|---|
+| **Simple schema** | **12ns** | 37ns | 47ns | 430ns | 304ns |
+| **Complex schema** (nested + array + pattern) | **26ns** | 51ns | 72ns | 471ns | 683ns |
 
 > Different categories: ata/typebox are JSON Schema validators, zod/valibot are schema-builder DSLs. [Benchmark code](benchmark/bench_vs_ecosystem.mjs)
 
