@@ -291,12 +291,14 @@ function buildSchemaMap(schemas) {
   const map = new Map()
   if (Array.isArray(schemas)) {
     for (const s of schemas) {
+      normalizeDraft7(s)
       const id = s.$id
       if (!id) throw new Error('Schema in schemas option must have $id')
       map.set(id, s)
     }
   } else {
     for (const [key, s] of Object.entries(schemas)) {
+      normalizeDraft7(s)
       map.set(s.$id || key, s)
     }
   }
