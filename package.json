@@ -8,8 +8,8 @@
     "install": "pkg-prebuilds-verify ./binding-options.js || cmake-js compile --target ata",
     "build": "cmake-js build --target ata",
     "rebuild": "cmake-js rebuild --target ata",
-    "prebuild": "prebuildify --napi --strip",
-    "prebuild-all": "prebuildify --napi --strip --arch x64 && prebuildify --napi --strip --arch arm64",
+    "prebuild": "pkg-prebuilds-copy --baseDir build/Release --source ata.node --name=ata --strip --napi_version=10",
+    "prebuild-all": "npm run prebuild -- --arch x64 && npm run prebuild -- --arch arm64",
     "test": "node test.js",
     "test:suite": "node tests/run_suite.js",
     "test:compat": "node tests/test_compat.js",
@@ -65,13 +65,12 @@
   "dependencies": {
     "cmake-js": "^8.0.0",
     "node-addon-api": "^8.7.0",
-    "node-api-headers": "^1.8.0",
-    "pkg-prebuilds": "^1.0.0"
+    "node-api-headers": "^1.8.0"
   },
   "devDependencies": {
     "@sinclair/typebox": "^0.34.49",
     "mitata": "^1.0.34",
-    "prebuildify": "^6.0.1",
+    "pkg-prebuilds": "^1.0.0",
     "typebox": "^1.1.7",
     "valibot": "^1.3.1",
     "zod": "^4.3.6"

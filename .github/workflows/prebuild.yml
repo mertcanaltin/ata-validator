@@ -38,7 +38,7 @@ jobs:
         run: npm install
 
       - name: Prebuild
-        run: npx prebuildify --napi --strip
+        run: npm run prebuild
 
       - name: Upload prebuilds
         uses: actions/upload-artifact@v4
