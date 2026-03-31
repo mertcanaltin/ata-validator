@@ -65,6 +65,7 @@
   "dependencies": {
     "cmake-js": "^8.0.0",
     "node-addon-api": "^8.7.0",
+    "node-api-headers": "^1.8.0",
     "pkg-prebuilds": "^1.0.0"
   },
   "devDependencies": {
