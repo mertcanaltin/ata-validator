@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-2022, windows-latest]
         node: [18, 20, 22]
     runs-on: ${{ matrix.os }}
     steps:
@@ -28,6 +28,14 @@ jobs:
       - name: Install RE2 (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libre2-dev libabsl-dev
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -o nasm.zip "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip"
+          unzip nasm.zip
+          echo "$PWD/nasm-2.16.03/" >> $GITHUB_PATH
 
       - name: Install dependencies
         run: npm install
