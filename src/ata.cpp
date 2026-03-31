@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <re2/re2.h>
 #include <set>
 #include <unordered_map>
@@ -2015,6 +2016,19 @@ bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t lengt
 
   // Use fast boolean-only tree walker — no error collection overhead
   return validate_fast(schema.impl->root, result.value(), *schema.impl);
+}
+
+bool is_valid_buf(const schema_ref& schema, const uint8_t* data, size_t length) {
+  if (!schema.impl || !schema.impl->root || !data || length == 0) return false;
+
+  // Thread-local buffer with simdjson padding — reused across calls
+  thread_local std::string tl_buf;
+  const size_t needed = length + REQUIRED_PADDING;
+  if (tl_buf.size() < needed) tl_buf.resize(needed);
+  std::memcpy(tl_buf.data(), data, length);
+  std::memset(tl_buf.data() + length, 0, REQUIRED_PADDING);
+
+  return is_valid_prepadded(schema, tl_buf.data(), length);
 }
 
 }  // namespace ata
