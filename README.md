@@ -33,6 +33,21 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 > Measured with [mitata](https://github.com/evanwashere/mitata) on Apple M4 Pro (process-isolated). [Benchmark code](benchmark/bench_complex_mitata.mjs)
 
+### unevaluatedProperties / unevaluatedItems
+
+| Scenario | ata | ajv | |
+|---|---|---|---|
+| **Tier 1** (properties only) valid | 3.3ns | 8.7ns | **ata 2.6x faster** |
+| **Tier 1** invalid | 3.7ns | 19.1ns | **ata 5.2x faster** |
+| **Tier 2** (allOf) valid | 3.3ns | 9.9ns | **ata 3.0x faster** |
+| **Tier 3** (anyOf) valid | 6.7ns | 23.2ns | **ata 3.5x faster** |
+| **Tier 3** invalid | 7.1ns | 42.4ns | **ata 6.0x faster** |
+| **unevaluatedItems** valid | 1.0ns | 5.5ns | **ata 5.4x faster** |
+| **unevaluatedItems** invalid | 0.96ns | 14.2ns | **ata 14.8x faster** |
+| **Compilation** | 375ns | 2.59ms | **ata 6,904x faster** |
+
+Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, dynamic schemas (anyOf/oneOf) use bitmask tracking with V8-inlined branch functions. [Benchmark code](benchmark/bench_unevaluated_mitata.mjs)
+
 ### vs Ecosystem (Zod, Valibot, TypeBox)
 
 | Scenario | ata | ajv | typebox | zod | valibot |
@@ -67,7 +82,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 **Combined single-pass validator**: ata compiles schemas into a single function that validates and collects errors in one pass. Valid data returns `VALID_RESULT` with zero allocation. Invalid data collects errors inline with pre-allocated frozen error objects - no double validation, no try/catch (3.3x V8 deopt). Lazy compilation defers all work to first usage - constructor is near-zero cost.
 
-**JS codegen**: Schemas are compiled to monolithic JS functions (like ajv). Full keyword support including `patternProperties`, `dependentSchemas`, `propertyNames`, cross-schema `$ref` with `$id` registry, and Draft 7 auto-detection. charCodeAt prefix matching replaces regex for simple patterns (4x faster). Merged key iteration loops (patternProperties + propertyNames + additionalProperties in a single `for..in`).
+**JS codegen**: Schemas are compiled to monolithic JS functions (like ajv). Full keyword support including `patternProperties`, `dependentSchemas`, `propertyNames`, `unevaluatedProperties`, `unevaluatedItems`, cross-schema `$ref` with `$id` registry, and Draft 7 auto-detection. Three-tier hybrid approach for unevaluated keywords: compile-time resolution for static schemas, bitmask tracking for dynamic ones. charCodeAt prefix matching replaces regex for simple patterns (4x faster). Merged key iteration loops (patternProperties + propertyNames + additionalProperties in a single `for..in`).
 
 **V8 TurboFan optimizations**: Destructuring batch reads, `undefined` checks instead of `in` operator, context-aware type guard elimination, property hoisting to local variables, tiered uniqueItems (nested loop for small arrays), inline key comparison for small property sets (no Set.has overhead).
 
@@ -75,7 +90,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ### JSON Schema Test Suite
 
-**98.4%** pass rate (937/952) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12).
+**96.9%** pass rate (1109/1144) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12).
 
 ## When to use ata
 
@@ -83,7 +98,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 - **Complex schemas** - `patternProperties`, `dependentSchemas`, `propertyNames` all inline JS codegen (5.9x faster than ajv)
 - **Multi-schema projects** - cross-schema `$ref` with `$id` registry, `addSchema()` API
 - **Draft 7 migration** - auto-detects `$schema`, normalizes Draft 7 keywords transparently
-- **Serverless / cold starts** - 2,184x faster compilation, 719x faster first validation
+- **Serverless / cold starts** - 6,904x faster compilation, 5,148x faster first validation
 - **Security-sensitive apps** - RE2 regex, immune to ReDoS attacks
 - **Batch/streaming validation** - NDJSON log processing, data pipelines (2.6x faster)
 - **Standard Schema V1** - native support for Fastify v5, tRPC, TanStack
@@ -91,12 +106,12 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 ## When to use ajv
 
-- **100% spec compliance needed** - ajv covers more edge cases (ata: 98.4%)
-- **`$dynamicRef` / `unevaluatedProperties`** - not yet supported in ata
+- **100% spec compliance needed** - ajv covers more edge cases (ata: 96.9%)
+- **`$dynamicRef`** - not yet supported in ata
 
 ## Features
 
-- **Hybrid validator**: 5.9x faster than ajv valid, 3.2x faster invalid on complex schemas - jsFn boolean guard for valid path (zero allocation), combined codegen with pre-allocated errors for invalid path. Schema compilation cache for repeated schemas
+- **Hybrid validator**: 5.9x faster than ajv valid, 6.0x faster invalid on complex schemas - jsFn boolean guard for valid path (zero allocation), combined codegen with pre-allocated errors for invalid path. Schema compilation cache for repeated schemas
 - **Cross-schema `$ref`**: `schemas` option and `addSchema()` API. Compile-time resolution with `$id` registry, zero runtime overhead
 - **Draft 7 support**: Auto-detects `$schema` field, normalizes `dependencies`/`additionalItems`/`definitions` transparently
 - **Multi-core**: Parallel validation across all CPU cores - 13.4M validations/sec
@@ -107,7 +122,7 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 - **Zero-copy paths**: Buffer and pre-padded input support - no unnecessary copies
 - **Defaults + coercion**: `default` values, `coerceTypes`, `removeAdditional` support
 - **C/C++ library**: Native API for non-Node.js environments
-- **98.4% spec compliant**: Draft 2020-12
+- **96.9% spec compliant**: Draft 2020-12
 
 ## Installation
 
@@ -256,8 +271,8 @@ auto result = ata::validate(schema, R"({"name": "Mert"})");
 | Type | `type` |
 | Numeric | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf` |
 | String | `minLength`, `maxLength`, `pattern`, `format` |
-| Array | `items`, `prefixItems`, `minItems`, `maxItems`, `uniqueItems`, `contains`, `minContains`, `maxContains` |
-| Object | `properties`, `required`, `additionalProperties`, `patternProperties`, `minProperties`, `maxProperties`, `propertyNames`, `dependentRequired`, `dependentSchemas` |
+| Array | `items`, `prefixItems`, `minItems`, `maxItems`, `uniqueItems`, `contains`, `minContains`, `maxContains`, `unevaluatedItems` |
+| Object | `properties`, `required`, `additionalProperties`, `patternProperties`, `minProperties`, `maxProperties`, `propertyNames`, `dependentRequired`, `dependentSchemas`, `unevaluatedProperties` |
 | Enum/Const | `enum`, `const` |
 | Composition | `allOf`, `anyOf`, `oneOf`, `not` |
 | Conditional | `if`, `then`, `else` |
