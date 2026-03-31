@@ -16,6 +16,10 @@
 
 #include "ata.h"
 
+#ifdef ATA_V8_FAST_API
+#include "ata_fast.h"
+#endif
+
 // ============================================================================
 // V8 Direct Object Traversal Engine
 // Validates Napi::Value directly without JSON.stringify + simdjson parse
@@ -1040,11 +1044,11 @@ static ThreadPool& pool() {
 }
 
 // --- Fast Validation Registry ---
-// Global schema slots for V8 Fast API (bypasses NAPI overhead)
-static constexpr size_t MAX_FAST_SLOTS = 4096;
-static ata::schema_ref g_fast_schemas[MAX_FAST_SLOTS];
-static std::string g_fast_schema_jsons[MAX_FAST_SLOTS];
-static uint32_t g_fast_slot_count = 0;
+// Global schema slots — extern linkage for V8 CFunction paths in ata_fast.cpp
+extern const size_t MAX_FAST_SLOTS = 4096;
+ata::schema_ref g_fast_schemas[MAX_FAST_SLOTS];
+std::string g_fast_schema_jsons[MAX_FAST_SLOTS];
+uint32_t g_fast_slot_count = 0;
 
 // Register a compiled schema in a fast slot, returns slot ID
 Napi::Value FastRegister(const Napi::CallbackInfo& info) {
@@ -1519,6 +1523,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   napi_value pcount_fn;
   napi_create_function(env, "rawParallelCount", NAPI_AUTO_LENGTH, RawParallelCount, nullptr, &pcount_fn);
   exports.Set("rawParallelCount", Napi::Value(env, pcount_fn));
+
+#ifdef ATA_V8_FAST_API
+  ata_fast::Register(env, exports);
+#endif
 
   return exports;
 }
