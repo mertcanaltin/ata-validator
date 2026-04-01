@@ -91,6 +91,10 @@ validation_result validate(std::string_view schema_json,
 // Use this when you only need true/false and can provide pre-padded input.
 bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t length);
 
+// Validate raw buffer — handles padding internally via thread-local copy.
+// Use this when input doesn't have simdjson padding (e.g., from V8 TypedArray).
+bool is_valid_buf(const schema_ref& schema, const uint8_t* data, size_t length);
+
 // Required padding size for is_valid_prepadded
 inline constexpr size_t REQUIRED_PADDING = 64;
 

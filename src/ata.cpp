@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <re2/re2.h>
 #include <set>
 #include <unordered_map>
@@ -350,6 +351,51 @@ struct plan {
 };
 }  // namespace cg
 
+// --- On-Demand validation plan ---
+// Grouped checks per value type. Each value consumed exactly once.
+// Built from schema_node at compile time, used by od_exec_plan at runtime.
+struct od_plan {
+  uint8_t type_mask = 0;
+
+  // Numeric — bitmask for which checks to run + flat array of bounds
+  enum num_flag : uint8_t {
+    HAS_MIN = 1, HAS_MAX = 2, HAS_EX_MIN = 4, HAS_EX_MAX = 8, HAS_MUL = 16
+  };
+  uint8_t num_flags = 0;
+  double num_min = 0, num_max = 0, num_ex_min = 0, num_ex_max = 0, num_mul = 0;
+
+  // String — single value.get(sv) then all checks
+  std::optional<uint64_t> min_length, max_length;
+  re2::RE2* pattern = nullptr;        // borrowed pointer from schema_node
+  uint8_t format_id = 255;            // 255 = no format check
+
+  // Object — single iterate with merged required+property lookup
+  struct prop_entry {
+    std::string key;
+    int required_idx = -1;            // bit index for required tracking, or -1
+    std::shared_ptr<od_plan> sub;     // property sub-plan, or nullptr
+  };
+  struct obj_plan {
+    std::vector<prop_entry> entries;  // merged required + properties — single scan
+    size_t required_count = 0;
+    bool no_additional = false;
+    std::optional<uint64_t> min_props, max_props;
+  };
+  std::shared_ptr<obj_plan> object;
+
+  // Array — single iterate: items + count
+  struct arr_plan {
+    std::shared_ptr<od_plan> items;
+    std::optional<uint64_t> min_items, max_items;
+  };
+  std::shared_ptr<arr_plan> array;
+
+  // If false, schema uses unsupported features — must fall back to DOM path.
+  bool supported = true;
+};
+
+using od_plan_ptr = std::shared_ptr<od_plan>;
+
 struct compiled_schema {
   schema_node_ptr root;
   std::unordered_map<std::string, schema_node_ptr> defs;
@@ -357,6 +403,7 @@ struct compiled_schema {
   dom::parser parser;          // used only at compile time
   cg::plan gen_plan;           // codegen validation plan
   bool use_ondemand = false;   // true if codegen plan supports On Demand
+  od_plan_ptr od;              // On-Demand execution plan
 };
 
 // Thread-local persistent parsers — reused across all validate calls on the
@@ -1917,6 +1964,256 @@ static simdjson::padded_string_view get_free_padded_view(
   return simdjson::padded_string_view(data, length, length + REQUIRED_PADDING);
 }
 
+// Build an od_plan from a schema_node tree.
+static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
+  if (!node) return nullptr;
+
+  auto plan = std::make_shared<od_plan>();
+
+  if (node->boolean_schema.has_value()) {
+    if (!node->boolean_schema.value()) plan->supported = false;
+    return plan;
+  }
+
+  // Unsupported features → fall back to DOM
+  if (!node->ref.empty() ||
+      !node->enum_values_minified.empty() ||
+      node->const_value_raw.has_value() ||
+      node->unique_items ||
+      !node->all_of.empty() ||
+      !node->any_of.empty() ||
+      !node->one_of.empty() ||
+      node->not_schema ||
+      node->if_schema ||
+      node->contains_schema ||
+      !node->prefix_items.empty() ||
+      !node->pattern_properties.empty() ||
+      !node->dependent_required.empty() ||
+      !node->dependent_schemas.empty() ||
+      node->property_names_schema ||
+      node->additional_properties_schema) {
+    plan->supported = false;
+    return plan;
+  }
+
+  plan->type_mask = node->type_mask;
+  if (node->minimum) { plan->num_flags |= od_plan::HAS_MIN; plan->num_min = *node->minimum; }
+  if (node->maximum) { plan->num_flags |= od_plan::HAS_MAX; plan->num_max = *node->maximum; }
+  if (node->exclusive_minimum) { plan->num_flags |= od_plan::HAS_EX_MIN; plan->num_ex_min = *node->exclusive_minimum; }
+  if (node->exclusive_maximum) { plan->num_flags |= od_plan::HAS_EX_MAX; plan->num_ex_max = *node->exclusive_maximum; }
+  if (node->multiple_of) { plan->num_flags |= od_plan::HAS_MUL; plan->num_mul = *node->multiple_of; }
+  plan->min_length = node->min_length;
+  plan->max_length = node->max_length;
+  plan->pattern = node->compiled_pattern.get();
+  plan->format_id = node->format_id;
+
+  // Object plan — build hash lookup for O(1) per-field dispatch
+  if (!node->properties.empty() || !node->required.empty() ||
+      node->additional_properties_bool.has_value() ||
+      node->min_properties.has_value() || node->max_properties.has_value()) {
+    auto op = std::make_shared<od_plan::obj_plan>();
+    op->required_count = node->required.size();
+    op->min_props = node->min_properties;
+    op->max_props = node->max_properties;
+    if (node->additional_properties_bool.has_value() &&
+        !node->additional_properties_bool.value()) {
+      op->no_additional = true;
+    }
+    // Build merged entries: each key appears once with required_idx + sub_plan
+    std::unordered_map<std::string, size_t> key_to_idx;
+    // Register required keys
+    for (size_t i = 0; i < node->required.size() && i < 64; i++) {
+      auto& rk = node->required[i];
+      if (key_to_idx.find(rk) == key_to_idx.end()) {
+        key_to_idx[rk] = op->entries.size();
+        op->entries.push_back({rk, static_cast<int>(i), nullptr});
+      } else {
+        op->entries[key_to_idx[rk]].required_idx = static_cast<int>(i);
+      }
+    }
+    // Register properties + compile sub-plans
+    for (auto& [key, sub_node] : node->properties) {
+      auto sub = compile_od_plan(sub_node);
+      if (!sub || !sub->supported) { plan->supported = false; return plan; }
+      auto it = key_to_idx.find(key);
+      if (it != key_to_idx.end()) {
+        op->entries[it->second].sub = std::move(sub);
+      } else {
+        key_to_idx[key] = op->entries.size();
+        op->entries.push_back({key, -1, std::move(sub)});
+      }
+    }
+    plan->object = std::move(op);
+  }
+
+  // Array plan
+  if (node->items_schema || node->min_items.has_value() || node->max_items.has_value()) {
+    auto ap = std::make_shared<od_plan::arr_plan>();
+    ap->min_items = node->min_items;
+    ap->max_items = node->max_items;
+    if (node->items_schema) {
+      ap->items = compile_od_plan(node->items_schema);
+      if (!ap->items || !ap->items->supported) { plan->supported = false; return plan; }
+    }
+    plan->array = std::move(ap);
+  }
+
+  return plan;
+}
+
+// Fast ASCII check: if all bytes < 0x80, byte length == codepoint length
+static inline uint64_t utf8_length_fast(std::string_view s) {
+  // Check 8 bytes at a time for non-ASCII
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(s.data());
+  size_t n = s.size();
+  size_t i = 0;
+  uint64_t has_high = 0;
+  for (; i + 8 <= n; i += 8) {
+    uint64_t block;
+    std::memcpy(&block, p + i, 8);
+    has_high |= block & 0x8080808080808080ULL;
+  }
+  for (; i < n; i++) has_high |= p[i] & 0x80;
+  if (has_high == 0) return n;  // Pure ASCII — byte count == codepoint count
+  return utf8_length(s);        // Fallback to full counting
+}
+
+// Execute an od_plan against a simdjson On-Demand value.
+// Each value consumed exactly once. Uses simdjson types directly — no od_type() overhead.
+static bool od_exec_plan(const od_plan& plan, simdjson::ondemand::value value) {
+  // Use simdjson type directly — skip od_type() conversion + get_number_type()
+  using sjt = simdjson::ondemand::json_type;
+  sjt st;
+  if (value.type().get(st) != SUCCESS) return false;
+
+  // Type check using simdjson type directly
+  if (plan.type_mask) {
+    uint8_t tbits;
+    switch (st) {
+      case sjt::string:  tbits = json_type_bit(json_type::string); break;
+      case sjt::boolean: tbits = json_type_bit(json_type::boolean); break;
+      case sjt::null:    tbits = json_type_bit(json_type::null_value); break;
+      case sjt::object:  tbits = json_type_bit(json_type::object); break;
+      case sjt::array:   tbits = json_type_bit(json_type::array); break;
+      case sjt::number:
+        // Only call get_number_type when schema has type constraint that distinguishes int/number
+        tbits = json_type_bit(json_type::number) | json_type_bit(json_type::integer);
+        if ((plan.type_mask & tbits) != tbits) {
+          // Schema distinguishes — need to check actual number type
+          simdjson::ondemand::number_type nt;
+          if (value.get_number_type().get(nt) == SUCCESS &&
+              nt != simdjson::ondemand::number_type::floating_point_number)
+            tbits = json_type_bit(json_type::integer) | json_type_bit(json_type::number);
+          else
+            tbits = json_type_bit(json_type::number);
+        }
+        break;
+      default: tbits = 0;
+    }
+    if (!(tbits & plan.type_mask)) return false;
+  }
+
+  switch (st) {
+  case sjt::number: {
+    if (!plan.num_flags) break;  // No numeric constraints
+    double v;
+    // Try integer first (more common), fall back to double
+    int64_t iv;
+    if (value.get(iv) == SUCCESS) {
+      v = static_cast<double>(iv);
+    } else if (value.get(v) != SUCCESS) {
+      return false;
+    }
+    uint8_t f = plan.num_flags;
+    if ((f & od_plan::HAS_MIN) && v < plan.num_min) return false;
+    if ((f & od_plan::HAS_MAX) && v > plan.num_max) return false;
+    if ((f & od_plan::HAS_EX_MIN) && v <= plan.num_ex_min) return false;
+    if ((f & od_plan::HAS_EX_MAX) && v >= plan.num_ex_max) return false;
+    if (f & od_plan::HAS_MUL) {
+      double r = std::fmod(v, plan.num_mul);
+      if (std::abs(r) > 1e-8 && std::abs(r - plan.num_mul) > 1e-8) return false;
+    }
+    break;
+  }
+  case sjt::string: {
+    std::string_view sv;
+    if (value.get(sv) != SUCCESS) return false;
+    if (plan.min_length || plan.max_length) {
+      uint64_t len = utf8_length_fast(sv);
+      if (plan.min_length && len < *plan.min_length) return false;
+      if (plan.max_length && len > *plan.max_length) return false;
+    }
+    if (plan.pattern) {
+      if (!re2::RE2::PartialMatch(re2::StringPiece(sv.data(), sv.size()), *plan.pattern))
+        return false;
+    }
+    if (plan.format_id != 255) {
+      if (!check_format_by_id(sv, plan.format_id)) return false;
+    }
+    break;
+  }
+  case sjt::object: {
+    if (!plan.object) break;
+    auto& op = *plan.object;
+    simdjson::ondemand::object obj;
+    if (value.get(obj) != SUCCESS) return false;
+
+    uint64_t required_found = 0;
+    uint64_t prop_count = 0;
+
+    for (auto field : obj) {
+      std::string_view key = field.unescaped_key();
+      prop_count++;
+
+      // Single merged scan: required + property in one pass
+      bool matched = false;
+      for (auto& e : op.entries) {
+        if (key == e.key) {
+          if (e.required_idx >= 0)
+            required_found |= (1ULL << e.required_idx);
+          if (e.sub) {
+            simdjson::ondemand::value fv;
+            if (field.value().get(fv) != SUCCESS) return false;
+            if (!od_exec_plan(*e.sub, fv)) return false;
+          }
+          matched = true;
+          break;
+        }
+      }
+      if (!matched && op.no_additional) return false;
+    }
+
+    uint64_t required_mask = (op.required_count >= 64)
+        ? ~0ULL : ((1ULL << op.required_count) - 1);
+    if ((required_found & required_mask) != required_mask) return false;
+    if (op.min_props && prop_count < *op.min_props) return false;
+    if (op.max_props && prop_count > *op.max_props) return false;
+    break;
+  }
+  case sjt::array: {
+    if (!plan.array) break;
+    auto& ap = *plan.array;
+    simdjson::ondemand::array arr;
+    if (value.get(arr) != SUCCESS) return false;
+
+    uint64_t count = 0;
+    for (auto elem : arr) {
+      simdjson::ondemand::value v;
+      if (elem.get(v) != SUCCESS) return false;
+      if (ap.items && !od_exec_plan(*ap.items, v)) return false;
+      count++;
+    }
+    if (ap.min_items && count < *ap.min_items) return false;
+    if (ap.max_items && count > *ap.max_items) return false;
+    break;
+  }
+  default:
+    break;
+  }
+
+  return true;
+}
+
 schema_ref compile(std::string_view schema_json) {
   auto ctx = std::make_shared<compiled_schema>();
   ctx->raw_schema = std::string(schema_json);
@@ -1934,6 +2231,7 @@ schema_ref compile(std::string_view schema_json) {
   cg_compile(ctx->root.get(), ctx->gen_plan, ctx->gen_plan.code);
   ctx->gen_plan.code.push_back({cg::op::END});
   ctx->use_ondemand = plan_supports_ondemand(ctx->gen_plan);
+  ctx->od = compile_od_plan(ctx->root);
 
   schema_ref ref;
   ref.impl = ctx;
@@ -2006,6 +2304,22 @@ bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t lengt
 
   simdjson::padded_string fallback;
   auto psv = get_free_padded_view(data, length, fallback);
+
+  // On-Demand fast path: skip DOM parse entirely
+  // Minimum 32 bytes — On-Demand doesn't fully validate small malformed docs
+  if (schema.impl->od && schema.impl->od->supported && length >= 32) {
+    auto od_result = tl_od_parser().iterate(psv);
+    if (!od_result.error()) {
+      simdjson::ondemand::value root_val;
+      if (od_result.get_value().get(root_val) == SUCCESS) {
+        if (od_exec_plan(*schema.impl->od, root_val)) {
+          return true;
+        }
+      }
+    }
+    psv = get_free_padded_view(data, length, fallback);
+  }
+
   auto result = tl_dom_parser().parse(psv);
   if (result.error()) return false;
 
@@ -2013,8 +2327,20 @@ bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t lengt
     return cg_exec(schema.impl->gen_plan, schema.impl->gen_plan.code, result.value());
   }
 
-  // Use fast boolean-only tree walker — no error collection overhead
   return validate_fast(schema.impl->root, result.value(), *schema.impl);
+}
+
+bool is_valid_buf(const schema_ref& schema, const uint8_t* data, size_t length) {
+  if (!schema.impl || !schema.impl->root || !data || length == 0) return false;
+
+  // Thread-local buffer with simdjson padding — reused across calls
+  thread_local std::string tl_buf;
+  const size_t needed = length + REQUIRED_PADDING;
+  if (tl_buf.size() < needed) tl_buf.resize(needed);
+  std::memcpy(tl_buf.data(), data, length);
+  std::memset(tl_buf.data() + length, 0, REQUIRED_PADDING);
+
+  return is_valid_prepadded(schema, tl_buf.data(), length);
 }
 
 }  // namespace ata

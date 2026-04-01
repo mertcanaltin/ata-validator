@@ -10,3 +10,4 @@ build_cmake/
 *.trace
 .cache/
 .DS_Store
+docs/superpowers/

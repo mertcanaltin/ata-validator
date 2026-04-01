@@ -346,6 +346,18 @@ class Validator {
       this._ensureCompiled();
       return this.isValidJSON(jsonStr);
     };
+    this.isValid = (buf) => {
+      this._ensureCompiled();
+      return this.isValid(buf);
+    };
+    this.countValid = (ndjsonBuf) => {
+      this._ensureCompiled();
+      return this.countValid(ndjsonBuf);
+    };
+    this.batchIsValid = (buffers) => {
+      this._ensureCompiled();
+      return this.batchIsValid(buffers);
+    };
 
     // ~standard uses self.validate() -- works with lazy because it goes through
     // the instance property which gets swapped after compilation
@@ -443,12 +455,16 @@ class Validator {
         } catch {}
       }
       // errFn: use JS codegen if safe, else lazy-native fallback
+      // For unevaluated schemas without errFn, use jsFn as boolean-only fallback
+      const hasUnevaluated = schemaObj && JSON.stringify(schemaObj).includes('unevaluatedProperties') || JSON.stringify(schemaObj).includes('unevaluatedItems')
       const errFn =
         safeErrFn ||
-        ((d) => {
-          this._ensureNative();
-          return this._compiled.validate(d);
-        });
+        (hasUnevaluated
+          ? (d) => ({ valid: jsFn(d), errors: jsFn(d) ? [] : [{ code: 'unevaluated', path: '', message: 'unevaluated property or item' }] })
+          : (d) => {
+              this._ensureNative();
+              return this._compiled.validate(d);
+            });
 
       // Best path: combined validator (single pass, validates + collects errors)
       // Valid data: returns VALID_RESULT, no allocation
@@ -567,6 +583,35 @@ class Validator {
               return false;
             }
           };
+      // V8 CFunction ultra-fast path — zero NAPI overhead for buffer validation
+      this._ensureNative();
+      {
+        const slot = this._fastSlot;
+        this.isValid = (buf) => {
+          if (typeof buf === 'string') buf = Buffer.from(buf);
+          return native.rawFastValidate(slot, buf);
+        };
+      }
+      {
+        const slot = this._fastSlot;
+        this.countValid = (ndjsonBuf) => {
+          if (typeof ndjsonBuf === 'string') ndjsonBuf = Buffer.from(ndjsonBuf);
+          const results = native.rawNDJSONValidate(slot, ndjsonBuf);
+          let count = 0;
+          for (let i = 0; i < results.length; i++) if (results[i]) count++;
+          return count;
+        };
+      }
+      {
+        const slot = this._fastSlot;
+        this.batchIsValid = (buffers) => {
+          let valid = 0;
+          for (const buf of buffers) {
+            if (native.rawFastValidate(slot, buf)) valid++;
+          }
+          return valid;
+        };
+      }
     } else {
       // ATA_FORCE_NAPI path: no JS codegen, use native for everything
       this._ensureNative();
@@ -579,6 +624,33 @@ class Validator {
       this.isValidObject = (data) => this._compiled.validate(data).valid;
       this.validateJSON = (jsonStr) => this._compiled.validateJSON(jsonStr);
       this.isValidJSON = (jsonStr) => this._compiled.isValidJSON(jsonStr);
+      {
+        const slot = this._fastSlot;
+        this.isValid = (buf) => {
+          if (typeof buf === 'string') buf = Buffer.from(buf);
+          return native.rawFastValidate(slot, buf);
+        };
+      }
+      {
+        const slot = this._fastSlot;
+        this.countValid = (ndjsonBuf) => {
+          if (typeof ndjsonBuf === 'string') ndjsonBuf = Buffer.from(ndjsonBuf);
+          const results = native.rawNDJSONValidate(slot, ndjsonBuf);
+          let count = 0;
+          for (let i = 0; i < results.length; i++) if (results[i]) count++;
+          return count;
+        };
+      }
+      {
+        const slot = this._fastSlot;
+        this.batchIsValid = (buffers) => {
+          let valid = 0;
+          for (const buf of buffers) {
+            if (native.rawFastValidate(slot, buf)) valid++;
+          }
+          return valid;
+        };
+      }
     }
   }
 

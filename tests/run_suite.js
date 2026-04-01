@@ -45,6 +45,8 @@ const SUPPORTED_FILES = [
   "dependentSchemas.json",
   "propertyNames.json",
   "prefixItems.json",
+  "unevaluatedProperties.json",
+  "unevaluatedItems.json",
   "format.json",
   "anchor.json",
 ];
