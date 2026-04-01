@@ -590,36 +590,28 @@ class Validator {
               return false;
             }
           };
-      // V8 CFunction ultra-fast path — zero NAPI overhead for buffer validation
+      // Buffer APIs: lazy native init — only compile native schema on first buffer call.
+      // This keeps cold start fast (JS codegen only) for users who only use validate().
       if (native) {
-        this._ensureNative();
-        {
-          const slot = this._fastSlot;
-          this.isValid = (buf) => {
-            if (typeof buf === 'string') buf = Buffer.from(buf);
-            return native.rawFastValidate(slot, buf);
-          };
-        }
-        {
-          const slot = this._fastSlot;
-          this.countValid = (ndjsonBuf) => {
-            if (typeof ndjsonBuf === 'string') ndjsonBuf = Buffer.from(ndjsonBuf);
-            const results = native.rawNDJSONValidate(slot, ndjsonBuf);
-            let count = 0;
-            for (let i = 0; i < results.length; i++) if (results[i]) count++;
-            return count;
-          };
-        }
-        {
-          const slot = this._fastSlot;
-          this.batchIsValid = (buffers) => {
-            let valid = 0;
-            for (const buf of buffers) {
-              if (native.rawFastValidate(slot, buf)) valid++;
-            }
-            return valid;
-          };
-        }
+        const self = this;
+        this.isValid = (buf) => {
+          self._ensureNative();
+          const slot = self._fastSlot;
+          self.isValid = (b) => { if (typeof b === 'string') b = Buffer.from(b); return native.rawFastValidate(slot, b); };
+          return self.isValid(buf);
+        };
+        this.countValid = (ndjsonBuf) => {
+          self._ensureNative();
+          const slot = self._fastSlot;
+          self.countValid = (b) => { if (typeof b === 'string') b = Buffer.from(b); const r = native.rawNDJSONValidate(slot, b); let c = 0; for (let i = 0; i < r.length; i++) if (r[i]) c++; return c; };
+          return self.countValid(ndjsonBuf);
+        };
+        this.batchIsValid = (buffers) => {
+          self._ensureNative();
+          const slot = self._fastSlot;
+          self.batchIsValid = (bufs) => { let v = 0; for (const b of bufs) if (native.rawFastValidate(slot, b)) v++; return v; };
+          return self.batchIsValid(buffers);
+        };
       }
     } else if (native) {
       // ATA_FORCE_NAPI path: no JS codegen, use native for everything
