@@ -57,7 +57,7 @@ if (CMAKE_JS_VERSION)
   include_directories(${CMAKE_JS_INC})
   file(GLOB SOURCE_FILES "binding/*.cpp" "src/*.cpp" "deps/simdjson/*.cpp")
 else()
-  file(GLOB SOURCE_FILES "src/*.cpp" "deps/simdjson/*.cpp")
+  file(GLOB SOURCE_FILES "src/*.cpp")
 endif()
 
 
@@ -84,7 +84,7 @@ if (CMAKE_JS_VERSION)
   string(REGEX REPLACE "[\r\n\"]" "" NODE_API_HEADERS_DIR ${NODE_API_HEADERS_DIR})
   target_include_directories(${PROJECT_NAME} PRIVATE ${NODE_API_HEADERS_DIR})
 else()
-  add_library(${PROJECT_NAME} SHARED ${SOURCE_FILES})
+  add_library(${PROJECT_NAME} ${SOURCE_FILES})
 endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC include)
@@ -100,7 +100,7 @@ add_library(ata::ata ALIAS ata)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE ${LINK_LIBRARIES})
 
-if(UNIX AND NOT APPLE)
+if(CMAKE_JS_VERSION AND UNIX AND NOT APPLE)
   list(APPEND LINK_LIBRARIES -static-libgcc -static-libstdc++)
   target_compile_options(${PROJECT_NAME} PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden)
   target_link_options(${PROJECT_NAME} PRIVATE -Wl,--exclude-libs,ALL)
