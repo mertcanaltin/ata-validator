@@ -253,7 +253,72 @@ console.log('\n--- nested path ---')
   )
 }
 
-// --- 21. dependentRequired ---
+// --- 21. array item required (instancePath must use index, not codegen expression) ---
+console.log('\n--- array item required ---')
+{
+  const schema = {
+    type: 'object',
+    properties: {
+      like: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { name: { type: 'string' } },
+          required: ['name']
+        }
+      }
+    }
+  }
+  const v = new Validator(schema, { allErrors: true })
+  const result = v.validate({ like: [{}] })
+  const errors = result.errors || []
+  const e = errors.find(err => err.keyword === 'required' && err.params && err.params.missingProperty === 'name')
+  assert(!result.valid, 'array item required: validation fails')
+  assert(e !== null && e !== undefined, 'array item required: error found')
+  assert(
+    e && e.instancePath === '/like/0',
+    `array item required: instancePath is "/like/0" (got ${e && e.instancePath})`
+  )
+  assert(
+    e && e.schemaPath === '#/properties/like/items/required',
+    `array item required: schemaPath correct (got ${e && e.schemaPath})`
+  )
+  assert(
+    e && e.message === "must have required property 'name'",
+    `array item required: message correct (got ${e && e.message})`
+  )
+}
+
+{
+  const schema = {
+    type: 'object',
+    properties: {
+      like: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { name: { type: 'string' } },
+          required: ['name']
+        }
+      }
+    }
+  }
+  const v = new Validator(schema, { allErrors: true })
+  const result = v.validate({ like: [{}, { name: 'ok' }, {}] })
+  const errors = result.errors || []
+  const reqErrors = errors.filter(err => err.keyword === 'required' && err.params && err.params.missingProperty === 'name')
+  assert(reqErrors.length === 2, `array item required multi: 2 errors (got ${reqErrors.length})`)
+  assert(
+    reqErrors[0] && reqErrors[0].instancePath === '/like/0',
+    `array item required multi: first error at /like/0 (got ${reqErrors[0] && reqErrors[0].instancePath})`
+  )
+  assert(
+    reqErrors[1] && reqErrors[1].instancePath === '/like/2',
+    `array item required multi: second error at /like/2 (got ${reqErrors[1] && reqErrors[1].instancePath})`
+  )
+}
+
+// --- 22. dependentRequired ---
 console.log('\n--- dependentRequired ---')
 {
   const schema = {
