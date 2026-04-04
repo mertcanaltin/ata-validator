@@ -26,7 +26,7 @@
     "pkg-prebuilds": false
   },
   "scripts": {
-    "install": "pkg-prebuilds-verify ./binding-options.js || cmake-js compile --target ata",
+    "install": "node scripts/install.js",
     "build": "cmake-js build --target ata",
     "rebuild": "cmake-js rebuild --target ata",
     "prebuild": "pkg-prebuilds-copy --baseDir build/Release --source ata.node --name=ata --strip --napi_version=10",
@@ -83,6 +83,7 @@
     "src/",
     "deps/",
     "prebuilds/",
+    "scripts/",
     "CMakeLists.txt",
     "README.md",
     "LICENSE"
