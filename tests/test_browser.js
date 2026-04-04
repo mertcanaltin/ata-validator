@@ -1,12 +1,12 @@
 // Browser compatibility tests — verifies ata works without native addon.
-// Simulates browser environment by stubbing node-gyp-build before require.
+// Simulates browser environment by stubbing pkg-prebuilds before require.
 
 const Module = require("module");
 
-// Intercept node-gyp-build to simulate browser "browser" field stubbing
+// Intercept pkg-prebuilds to simulate browser "browser" field stubbing
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, isMain, options) {
-  if (request === "node-gyp-build") {
+  if (request === "pkg-prebuilds") {
     // Return a module that throws when called, same as bundler stub
     return require.resolve("./browser_stub");
   }

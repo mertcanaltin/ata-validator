@@ -23,7 +23,7 @@
   },
   "sideEffects": false,
   "browser": {
-    "node-gyp-build": false
+    "pkg-prebuilds": false
   },
   "scripts": {
     "install": "pkg-prebuilds-verify ./binding-options.js || cmake-js compile --target ata",
