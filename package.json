@@ -1,9 +1,30 @@
 {
   "name": "ata-validator",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Ultra-fast JSON Schema validator. 4.7x faster validation, 1,800x faster compilation. Works without native addon. Cross-schema $ref, Draft 2020-12 + Draft 7, V8-optimized JS codegen, simdjson, RE2, multi-core. Standard Schema V1 compatible.",
   "main": "index.js",
+  "module": "index.mjs",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "browser": {
+        "import": "./index.browser.mjs",
+        "require": "./index.js"
+      },
+      "import": "./index.mjs",
+      "require": "./index.js"
+    },
+    "./compat": {
+      "types": "./compat.d.ts",
+      "import": "./compat.mjs",
+      "require": "./compat.js"
+    }
+  },
+  "sideEffects": false,
+  "browser": {
+    "node-gyp-build": false
+  },
   "scripts": {
     "install": "pkg-prebuilds-verify ./binding-options.js || cmake-js compile --target ata",
     "build": "cmake-js build --target ata",
@@ -14,6 +35,7 @@
     "test:suite": "node tests/run_suite.js",
     "test:compat": "node tests/test_compat.js",
     "test:standard-schema": "node tests/test_standard_schema.js",
+    "test:browser": "node tests/test_browser.js",
     "bench": "node benchmark/bench_large.js",
     "fuzz": "node tests/fuzz_differential.js",
     "fuzz:long": "FUZZ_ITERATIONS=100000 node tests/fuzz_differential.js"
@@ -48,9 +70,12 @@
   },
   "files": [
     "index.js",
+    "index.mjs",
+    "index.browser.mjs",
     "index.d.ts",
     "lib/",
     "compat.js",
+    "compat.mjs",
     "compat.d.ts",
     "binding.gyp",
     "binding/",

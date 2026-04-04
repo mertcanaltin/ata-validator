@@ -282,6 +282,7 @@ function parsePointerPath(path) {
 }
 
 function createPaddedBuffer(jsonStr) {
+  if (typeof Buffer === 'undefined') throw new Error('createPaddedBuffer requires Node.js Buffer');
   const jsonBuf = Buffer.from(jsonStr);
   const padded = Buffer.allocUnsafe(jsonBuf.length + SIMDJSON_PADDING);
   jsonBuf.copy(padded);
@@ -405,11 +406,12 @@ class Validator {
       : this._schemaStr;
     const cached = _compileCache.get(mapKey);
     let jsFn, jsCombinedFn, jsErrFn;
-    if (cached && !process.env.ATA_FORCE_NAPI) {
+    var _forceNapi = typeof process !== 'undefined' && process.env && process.env.ATA_FORCE_NAPI;
+    if (cached && !_forceNapi) {
       jsFn = cached.jsFn;
       jsCombinedFn = cached.combined;
       jsErrFn = cached.errFn;
-    } else if (!process.env.ATA_FORCE_NAPI) {
+    } else if (!_forceNapi) {
       jsFn = compileToJSCodegen(schemaObj, sm) || compileToJS(schemaObj, null, sm);
       jsCombinedFn = compileToJSCombined(schemaObj, VALID_RESULT, sm);
       jsErrFn = compileToJSCodegenWithErrors(schemaObj, sm);
@@ -686,7 +688,7 @@ class Validator {
 
   _ensureCodegen() {
     if (this._jsFn) return;
-    if (process.env.ATA_FORCE_NAPI) return;
+    if (typeof process !== 'undefined' && process.env && process.env.ATA_FORCE_NAPI) return;
     const sm = this._schemaMap.size > 0 ? this._schemaMap : null;
     const mapKey = this._schemaMap.size > 0
       ? this._schemaStr + '\0' + [...this._schemaMap.keys()].sort().join('\0')
@@ -902,7 +904,7 @@ function validate(schema, data) {
 
 function version() {
   if (native) return native.version();
-  return require("./package.json").version;
+  try { return require("./package.json").version; } catch { return "unknown"; }
 }
 
 // Bundle multiple validators into a single JS file for fast startup.
