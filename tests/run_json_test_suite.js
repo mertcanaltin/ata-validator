@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { Validator } = require('..');
 
-const testDir = path.join(__dirname, 'json_test_suite');
+const testDir = path.join(__dirname, 'json_test_suite', 'test_parsing');
 const files = fs.readdirSync(testDir).filter(f => f.endsWith('.json'));
 
 // Simple schema that accepts any valid JSON
