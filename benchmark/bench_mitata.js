@@ -1,109 +1,107 @@
-const { bench, group, run, summary, do_not_optimize } = require("mitata");
+const { bench, group, run } = require("mitata");
 const { Validator } = require("../index");
-const Ajv = require("./node_modules/ajv");
-const addFormats = require("./node_modules/ajv-formats");
+const Ajv = require("ajv");
+const addFormats = require("ajv-formats");
+
+let Blaze, blazeTemplate;
+try {
+  Blaze = require("@sourcemeta/blaze").Blaze;
+  blazeTemplate = require("./blaze_template.json");
+} catch {}
 
 const schema = {
   type: "object",
   properties: {
-    id: { type: "integer", minimum: 1 },
-    name: { type: "string", minLength: 1, maxLength: 100 },
-    email: { type: "string", format: "email" },
-    age: { type: "integer", minimum: 0, maximum: 150 },
-    active: { type: "boolean" },
-    tags: {
+    users: {
       type: "array",
-      items: { type: "string" },
-      uniqueItems: true,
-      maxItems: 10,
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "integer", minimum: 1 },
+          name: { type: "string", minLength: 1 },
+          email: { type: "string", format: "email" },
+          age: { type: "integer", minimum: 0, maximum: 150 },
+          active: { type: "boolean" },
+          role: { enum: ["admin", "user", "moderator"] },
+          scores: {
+            type: "array",
+            items: { type: "number", minimum: 0, maximum: 100 },
+            minItems: 1,
+          },
+          address: {
+            type: "object",
+            properties: {
+              street: { type: "string" },
+              city: { type: "string" },
+              country: { type: "string" },
+              zip: { type: "string" },
+            },
+            required: ["street", "city", "country"],
+          },
+        },
+        required: ["id", "name", "email", "active", "role"],
+      },
     },
-    address: {
+    metadata: {
       type: "object",
       properties: {
-        street: { type: "string" },
-        city: { type: "string" },
-        zip: { type: "string", pattern: "^[0-9]{5}$" },
+        total: { type: "integer" },
+        page: { type: "integer", minimum: 1 },
+        perPage: { type: "integer", minimum: 1, maximum: 100 },
       },
-      required: ["street", "city"],
+      required: ["total", "page", "perPage"],
     },
   },
-  required: ["id", "name", "email", "active"],
+  required: ["users", "metadata"],
 };
 
-const validDoc = {
-  id: 42,
-  name: "Mert Can Altin",
-  email: "mert@example.com",
-  age: 26,
-  active: true,
-  tags: ["nodejs", "cpp", "performance"],
-  address: { street: "123 Main St", city: "Istanbul", zip: "34000" },
-};
-
-const invalidDoc = {
-  id: -1,
-  name: "",
-  email: "not-an-email",
-  age: 200,
-  active: "yes",
-  tags: ["a", "a"],
-  address: { zip: "abc" },
-};
-
-const jsonStr = JSON.stringify(validDoc);
-
-// pre-compile
-const ataValidator = new Validator(schema);
-ataValidator.validate(validDoc); // trigger lazy compile
+function makeData(userCount) {
+  const users = [];
+  for (let i = 0; i < userCount; i++) {
+    users.push({
+      id: i + 1,
+      name: "User " + i,
+      email: "user" + i + "@example.com",
+      age: 20 + (i % 50),
+      active: i % 3 !== 0,
+      role: ["admin", "user", "moderator"][i % 3],
+      scores: [85, 92, 78, 95, 88],
+      address: {
+        street: (100 + i) + " Main St",
+        city: "Istanbul",
+        country: "Turkey",
+        zip: "34000",
+      },
+    });
+  }
+  return { users, metadata: { total: userCount, page: 1, perPage: Math.min(userCount, 100) } };
+}
 
 const ajv = new Ajv({ allErrors: true });
 addFormats(ajv);
 const ajvValidate = ajv.compile(schema);
+const ataValidator = new Validator(schema);
 
-summary(() => {
-  group("validate(obj) - valid", () => {
-    bench("ata", () => do_not_optimize(ataValidator.validate(validDoc)));
-    bench("ajv", () => do_not_optimize(ajvValidate(validDoc)));
+let blazeEvaluator;
+if (Blaze && blazeTemplate) {
+  blazeEvaluator = new Blaze(blazeTemplate);
+}
+
+for (const count of [10, 100, 1000]) {
+  const data = makeData(count);
+  const jsonStr = JSON.stringify(data);
+
+  group(count + " users (" + (jsonStr.length / 1024).toFixed(1) + " KB) - JSON string", () => {
+    bench("ata", () => ataValidator.validateJSON(jsonStr));
+    bench("ajv", () => ajvValidate(JSON.parse(jsonStr)));
+    if (blazeEvaluator) bench("blaze", () => blazeEvaluator.validate(JSON.parse(jsonStr)));
   });
 
-  group("validate(obj) - invalid", () => {
-    bench("ata", () => do_not_optimize(ataValidator.validate(invalidDoc)));
-    bench("ajv", () => do_not_optimize(ajvValidate(invalidDoc)));
+  group(count + " users (" + (jsonStr.length / 1024).toFixed(1) + " KB) - JS object", () => {
+    bench("ata", () => ataValidator.validate(data));
+    bench("ajv", () => ajvValidate(data));
+    if (blazeEvaluator) bench("blaze", () => blazeEvaluator.validate(data));
   });
-
-  group("isValidObject(obj) - valid", () => {
-    bench("ata", () =>
-      do_not_optimize(ataValidator.isValidObject(validDoc)),
-    );
-    bench("ajv", () => do_not_optimize(ajvValidate(validDoc)));
-  });
-
-  group("validateJSON(str) - valid", () => {
-    bench("ata", () => do_not_optimize(ataValidator.validateJSON(jsonStr)));
-    bench("ajv", () => do_not_optimize(ajvValidate(JSON.parse(jsonStr))));
-  });
-
-  group("schema compilation", () => {
-    bench("ata", () => do_not_optimize(new Validator(schema)));
-    bench("ajv", () => {
-      const a = new Ajv({ allErrors: true });
-      addFormats(a);
-      do_not_optimize(a.compile(schema));
-    });
-  });
-
-  group("first validation (compile + validate)", () => {
-    bench("ata", () => {
-      const v = new Validator(schema);
-      do_not_optimize(v.validate(validDoc));
-    });
-    bench("ajv", () => {
-      const a = new Ajv({ allErrors: true });
-      addFormats(a);
-      const fn = a.compile(schema);
-      do_not_optimize(fn(validDoc));
-    });
-  });
-});
+}
 
 run();

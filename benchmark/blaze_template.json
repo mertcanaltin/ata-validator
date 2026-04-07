@@ -1,0 +1,462 @@
+[
+  1,
+  false,
+  false,
+  [
+    [
+      [
+        4,
+        [ "required" ],
+        [],
+        "file:///private/tmp/bench_schema.json#/required",
+        1,
+        [
+          6,
+          [ "metadata", "users" ]
+        ]
+      ],
+      [
+        4,
+        [ "properties", "metadata", "required" ],
+        [ "metadata" ],
+        "file:///private/tmp/bench_schema.json#/properties/metadata/required",
+        1,
+        [
+          6,
+          [ "page", "perPage", "total" ]
+        ]
+      ],
+      [
+        86,
+        [ "properties", "metadata", "properties" ],
+        [ "metadata" ],
+        "file:///private/tmp/bench_schema.json#/properties/metadata/properties",
+        1,
+        [
+          4,
+          [
+            "total",
+            [ 0, 119165821088768, 0, 0 ]
+          ]
+        ],
+        [
+          [
+            36,
+            [ "properties", "metadata", "properties", "total", "type" ],
+            [ "metadata", "total" ],
+            "file:///private/tmp/bench_schema.json#/properties/metadata/properties/total/type",
+            1,
+            [ 8, 2 ]
+          ]
+        ]
+      ],
+      [
+        86,
+        [ "properties", "metadata", "properties" ],
+        [ "metadata" ],
+        "file:///private/tmp/bench_schema.json#/properties/metadata/properties",
+        1,
+        [
+          4,
+          [
+            "page",
+            [ 0, 435526135808, 0, 0 ]
+          ]
+        ],
+        [
+          [
+            36,
+            [ "properties", "metadata", "properties", "page", "type" ],
+            [ "metadata", "page" ],
+            "file:///private/tmp/bench_schema.json#/properties/metadata/properties/page/type",
+            1,
+            [ 8, 2 ]
+          ],
+          [
+            29,
+            [ "properties", "metadata", "properties", "page", "minimum" ],
+            [ "metadata", "page" ],
+            "file:///private/tmp/bench_schema.json#/properties/metadata/properties/page/minimum",
+            1,
+            [ 1, 1 ]
+          ]
+        ]
+      ],
+      [
+        86,
+        [ "properties", "metadata", "properties" ],
+        [ "metadata" ],
+        "file:///private/tmp/bench_schema.json#/properties/metadata/properties",
+        1,
+        [
+          4,
+          [
+            "perPage",
+            [ 0, 7306915918576447488, 0, 0 ]
+          ]
+        ],
+        [
+          [
+            36,
+            [ "properties", "metadata", "properties", "perPage", "type" ],
+            [ "metadata", "perPage" ],
+            "file:///private/tmp/bench_schema.json#/properties/metadata/properties/perPage/type",
+            1,
+            [ 8, 2 ]
+          ],
+          [
+            30,
+            [ "properties", "metadata", "properties", "perPage", "maximum" ],
+            [ "metadata", "perPage" ],
+            "file:///private/tmp/bench_schema.json#/properties/metadata/properties/perPage/maximum",
+            1,
+            [ 1, 100 ]
+          ],
+          [
+            29,
+            [ "properties", "metadata", "properties", "perPage", "minimum" ],
+            [ "metadata", "perPage" ],
+            "file:///private/tmp/bench_schema.json#/properties/metadata/properties/perPage/minimum",
+            1,
+            [ 1, 1 ]
+          ]
+        ]
+      ],
+      [
+        77,
+        [ "properties", "users", "items" ],
+        [ "users" ],
+        "file:///private/tmp/bench_schema.json#/properties/users/items",
+        1,
+        [ 10, 0 ],
+        [
+          [
+            4,
+            [ "required" ],
+            [],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/required",
+            1,
+            [
+              6,
+              [ "active", "email", "id", "name", "role" ]
+            ]
+          ],
+          [
+            38,
+            [ "properties", "active", "type" ],
+            [ "active" ],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties/active/type",
+            1,
+            [ 8, 1 ]
+          ],
+          [
+            38,
+            [ "properties", "email", "type" ],
+            [ "email" ],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties/email/type",
+            1,
+            [ 8, 4 ]
+          ],
+          [
+            13,
+            [ "properties", "name", "type" ],
+            [ "name" ],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties/name/type",
+            1,
+            [
+              11,
+              [ 1, null, false ]
+            ]
+          ],
+          [
+            28,
+            [ "properties", "role", "enum" ],
+            [ "role" ],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties/role/enum",
+            1,
+            [
+              20,
+              [
+                [
+                  [
+                    [ 0, 491328337152, 0, 0 ],
+                    "user"
+                  ],
+                  [
+                    [ 0, 121399085916416, 0, 0 ],
+                    "admin"
+                  ],
+                  [
+                    [ 29295, 8386109760942861568, 0, 0 ],
+                    "moderator"
+                  ]
+                ],
+                [
+                  [ 0, 0 ],
+                  [ 0, 0 ],
+                  [ 0, 0 ],
+                  [ 0, 0 ],
+                  [ 1, 1 ],
+                  [ 2, 2 ],
+                  [ 0, 0 ],
+                  [ 0, 0 ],
+                  [ 0, 0 ],
+                  [ 3, 3 ]
+                ]
+              ]
+            ]
+          ],
+          [
+            36,
+            [ "properties", "id", "type" ],
+            [ "id" ],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties/id/type",
+            1,
+            [ 8, 2 ]
+          ],
+          [
+            29,
+            [ "properties", "id", "minimum" ],
+            [ "id" ],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties/id/minimum",
+            1,
+            [ 1, 1 ]
+          ],
+          [
+            87,
+            [ "properties" ],
+            [],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties",
+            1,
+            [
+              4,
+              [
+                "age",
+                [ 0, 1701273856, 0, 0 ]
+              ]
+            ],
+            [
+              [
+                36,
+                [ "properties", "age", "type" ],
+                [ "age" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/age/type",
+                1,
+                [ 8, 2 ]
+              ],
+              [
+                30,
+                [ "properties", "age", "maximum" ],
+                [ "age" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/age/maximum",
+                1,
+                [ 1, 150 ]
+              ],
+              [
+                29,
+                [ "properties", "age", "minimum" ],
+                [ "age" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/age/minimum",
+                1,
+                [ 1, 0 ]
+              ]
+            ]
+          ],
+          [
+            87,
+            [ "properties" ],
+            [],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties",
+            1,
+            [
+              4,
+              [
+                "scores",
+                [ 0, 32481164491191040, 0, 0 ]
+              ]
+            ],
+            [
+              [
+                77,
+                [ "properties", "scores", "items" ],
+                [ "scores" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/scores/items",
+                1,
+                [ 10, 0 ],
+                [
+                  [
+                    12,
+                    [ "type" ],
+                    [],
+                    "file:///private/tmp/bench_schema.json#/properties/users/items/properties/scores/items/type",
+                    1,
+                    [ 7, 140 ]
+                  ],
+                  [
+                    30,
+                    [ "maximum" ],
+                    [],
+                    "file:///private/tmp/bench_schema.json#/properties/users/items/properties/scores/items/maximum",
+                    1,
+                    [ 1, 100 ]
+                  ],
+                  [
+                    29,
+                    [ "minimum" ],
+                    [],
+                    "file:///private/tmp/bench_schema.json#/properties/users/items/properties/scores/items/minimum",
+                    1,
+                    [ 1, 0 ]
+                  ]
+                ]
+              ],
+              [
+                15,
+                [ "properties", "scores", "type" ],
+                [ "scores" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/scores/type",
+                1,
+                [
+                  11,
+                  [ 1, null, false ]
+                ]
+              ]
+            ]
+          ],
+          [
+            87,
+            [ "properties" ],
+            [],
+            "file:///private/tmp/bench_schema.json#/properties/users/items/properties",
+            1,
+            [
+              4,
+              [
+                "address",
+                [ 0, 8319104478668415232, 0, 0 ]
+              ]
+            ],
+            [
+              [
+                4,
+                [ "properties", "address", "required" ],
+                [ "address" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/required",
+                1,
+                [
+                  6,
+                  [ "city", "country", "street" ]
+                ]
+              ],
+              [
+                86,
+                [ "properties", "address", "properties" ],
+                [ "address" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/properties",
+                1,
+                [
+                  4,
+                  [
+                    "city",
+                    [ 0, 521644106496, 0, 0 ]
+                  ]
+                ],
+                [
+                  [
+                    38,
+                    [ "properties", "address", "properties", "city", "type" ],
+                    [ "address", "city" ],
+                    "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/properties/city/type",
+                    1,
+                    [ 8, 4 ]
+                  ]
+                ]
+              ],
+              [
+                86,
+                [ "properties", "address", "properties" ],
+                [ "address" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/properties",
+                1,
+                [
+                  4,
+                  [
+                    "country",
+                    [ 0, 8751185043699753728, 0, 0 ]
+                  ]
+                ],
+                [
+                  [
+                    38,
+                    [ "properties", "address", "properties", "country", "type" ],
+                    [ "address", "country" ],
+                    "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/properties/country/type",
+                    1,
+                    [ 8, 4 ]
+                  ]
+                ]
+              ],
+              [
+                86,
+                [ "properties", "address", "properties" ],
+                [ "address" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/properties",
+                1,
+                [
+                  4,
+                  [
+                    "street",
+                    [ 0, 32762583684772608, 0, 0 ]
+                  ]
+                ],
+                [
+                  [
+                    38,
+                    [ "properties", "address", "properties", "street", "type" ],
+                    [ "address", "street" ],
+                    "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/properties/street/type",
+                    1,
+                    [ 8, 4 ]
+                  ]
+                ]
+              ],
+              [
+                86,
+                [ "properties", "address", "properties" ],
+                [ "address" ],
+                "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/properties",
+                1,
+                [
+                  4,
+                  [
+                    "zip",
+                    [ 0, 1885960704, 0, 0 ]
+                  ]
+                ],
+                [
+                  [
+                    38,
+                    [ "properties", "address", "properties", "zip", "type" ],
+                    [ "address", "zip" ],
+                    "file:///private/tmp/bench_schema.json#/properties/users/items/properties/address/properties/zip/type",
+                    1,
+                    [ 8, 4 ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ],
+      [
+        38,
+        [ "properties", "users", "type" ],
+        [ "users" ],
+        "file:///private/tmp/bench_schema.json#/properties/users/type",
+        1,
+        [ 8, 5 ]
+      ]
+    ]
+  ],
+  []
+]
