@@ -48,6 +48,12 @@ jobs:
           C:\vcpkg\vcpkg install abseil:x64-windows-static
         shell: cmd
 
+      - name: Set Toolchain and Triplet
+        if: runner.os == 'Windows'
+        run: |
+          echo "CMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "VCPKG_TARGET_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Install dependencies
         run: npm install
 
