@@ -73,8 +73,40 @@ jobs:
           name: prebuild-${{ matrix.os }}-${{ matrix.arch }}
           path: prebuilds/
 
+  prebuild-musl:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.arch == 'arm64'
+
+      - name: Build in Alpine container
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v ${{ github.workspace }}:/work -w /work \
+            node:22-alpine sh -c "
+              apk add --no-cache python3 make g++ cmake re2-dev abseil-cpp-dev linux-headers &&
+              npm install &&
+              npx pkg-prebuilds-copy --baseDir build/Release --source ata.node --name=ata --strip --napi_version=10 --libc=musl
+            "
+
+      - name: Upload prebuilds
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-linux-musl-${{ matrix.arch }}
+          path: prebuilds/
+
   publish:
-    needs: prebuild
+    needs: [prebuild, prebuild-musl]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

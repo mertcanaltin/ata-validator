@@ -106,8 +106,8 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 
 ## When to use ajv
 
-- **100% spec compliance needed** - ajv covers more edge cases (ata: 96.9%)
 - **`$dynamicRef`** - not yet supported in ata
+- **Existing ajv ecosystem** - plugins, custom keywords, large community
 
 ## Features
 

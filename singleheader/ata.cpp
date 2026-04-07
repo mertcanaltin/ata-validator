@@ -1,3 +1,5 @@
+/* auto-generated on 2026-04-07 04:35:23 +0300. Do not edit! */
+/* begin file src/ata.cpp */
 #include "ata.h"
 
 // mimalloc: faster new/delete for small allocations.
@@ -2401,3 +2403,4 @@ bool is_valid_buf(const schema_ref& schema, const uint8_t* data, size_t length) 
 }
 
 }  // namespace ata
+/* end file src/ata.cpp */

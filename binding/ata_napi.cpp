@@ -9,7 +9,9 @@
 #include <functional>
 #include <queue>
 #include <atomic>
+#ifndef ATA_NO_RE2
 #include <re2/re2.h>
+#endif
 #include <set>
 #include <string>
 #include <vector>
@@ -39,7 +41,9 @@ struct schema_node {
   std::optional<uint64_t> min_length;
   std::optional<uint64_t> max_length;
   std::optional<std::string> pattern;
+#ifndef ATA_NO_RE2
   std::shared_ptr<re2::RE2> compiled_pattern;
+#endif
 
   std::optional<uint64_t> min_items;
   std::optional<uint64_t> max_items;
@@ -63,7 +67,9 @@ struct schema_node {
   struct pattern_prop {
     std::string pattern;
     schema_node_ptr schema;
+#ifndef ATA_NO_RE2
     std::shared_ptr<re2::RE2> compiled;
+#endif
   };
   std::vector<pattern_prop> pattern_properties;
 
@@ -516,6 +522,7 @@ static void validate_napi(const schema_node_ptr& node,
                             " > maxLength " +
                             std::to_string(node->max_length.value())});
     }
+#ifndef ATA_NO_RE2
     if (node->compiled_pattern) {
       if (!re2::RE2::PartialMatch(sv, *node->compiled_pattern)) {
         errors.push_back({ata::error_code::pattern_mismatch, path,
@@ -523,6 +530,7 @@ static void validate_napi(const schema_node_ptr& node,
                               node->pattern.value()});
       }
     }
+#endif
     if (node->format.has_value()) {
       const auto& fmt = node->format.value();
       bool format_ok = napi_check_format(sv, fmt);
@@ -644,11 +652,13 @@ static void validate_napi(const schema_node_ptr& node,
       }
 
       for (const auto& pp : node->pattern_properties) {
+#ifndef ATA_NO_RE2
         if (pp.compiled && re2::RE2::PartialMatch(key_str, *pp.compiled)) {
           validate_napi(pp.schema, val, env, path + "/" + key_str, ctx,
                         errors);
           matched = true;
         }
+#endif
       }
 
       if (!matched) {

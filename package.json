@@ -38,7 +38,8 @@
     "test:browser": "node tests/test_browser.js",
     "bench": "node benchmark/bench_large.js",
     "fuzz": "node tests/fuzz_differential.js",
-    "fuzz:long": "FUZZ_ITERATIONS=100000 node tests/fuzz_differential.js"
+    "fuzz:long": "FUZZ_ITERATIONS=100000 node tests/fuzz_differential.js",
+    "test:json-suite": "node tests/run_json_test_suite.js"
   },
   "keywords": [
     "json",

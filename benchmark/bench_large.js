@@ -1,6 +1,12 @@
 const { Validator } = require("../index");
 const Ajv = require("ajv");
 const addFormats = require("ajv-formats");
+let Blaze, blazeTemplate;
+try {
+  Blaze = require("@sourcemeta/blaze").Blaze;
+  blazeTemplate = require("./blaze_template.json");
+} catch {}
+
 
 // Generate a larger, more realistic schema and data
 const schema = {
@@ -83,12 +89,12 @@ function bench(label, iterations, fn) {
   return opsPerSec;
 }
 
-function winner(ataOps, ajvOps) {
-  const ratio = ataOps / ajvOps;
-  if (ratio > 1) {
-    return `  >>> ata ${ratio.toFixed(2)}x faster`;
-  } else {
-    return `  >>> ajv ${(1/ratio).toFixed(2)}x faster`;
+function compare(label, results) {
+  const best = results.reduce((a, b) => a.ops > b.ops ? a : b);
+  for (const r of results) {
+    if (r === best) continue;
+    const ratio = best.ops / r.ops;
+    console.log(`  >>> ${best.name} ${ratio.toFixed(2)}x faster than ${r.name}`);
   }
 }
 
@@ -97,8 +103,22 @@ addFormats(ajv);
 const ajvValidate = ajv.compile(schema);
 const ataValidator = new Validator(schema);
 
+let blazeValidate;
+if (Blaze && blazeTemplate) {
+  const evaluator = new Blaze(blazeTemplate);
+  blazeValidate = (data) => evaluator.validate(data);
+}
+
+const runners = [
+  { name: "ata", validateObj: (d) => ataValidator.validate(d), validateJSON: (s) => ataValidator.validateJSON(s) },
+  { name: "ajv", validateObj: (d) => ajvValidate(d), validateJSON: (s) => ajvValidate(JSON.parse(s)) },
+];
+if (blazeValidate) {
+  runners.push({ name: "blaze", validateObj: (d) => blazeValidate(d), validateJSON: (s) => blazeValidate(JSON.parse(s)) });
+}
+
 console.log("==========================================================");
-console.log("  ata vs ajv — Apples-to-Apples Benchmark");
+console.log("  ata vs ajv" + (blazeValidate ? " vs blaze" : "") + " — Benchmark");
 console.log("  Both directions: JSON string and JS object pipelines");
 console.log("==========================================================");
 
@@ -110,26 +130,20 @@ for (const count of [10, 50, 100, 500, 1000]) {
 
   const N = count >= 500 ? 1000 : count >= 100 ? 5000 : count >= 50 ? 10000 : 20000;
 
-  // Pipeline A: input is a JSON string
-  // This is the case when data comes from disk, network, or another service
   console.log("\n  [A] JSON string -> validation result:");
-  const ataJsonOps = bench(`ata  validateJSON(str)`, N, () => {
-    ataValidator.validateJSON(jsonStr);
-  });
-  const ajvJsonOps = bench(`ajv  JSON.parse(str) + validate(obj)`, N, () => {
-    ajvValidate(JSON.parse(jsonStr));
-  });
-  console.log(winner(ataJsonOps, ajvJsonOps));
+  const jsonResults = [];
+  for (const r of runners) {
+    const ops = bench(`${r.name.padEnd(6)} validateJSON(str)`, N, () => r.validateJSON(jsonStr));
+    jsonResults.push({ name: r.name, ops });
+  }
+  compare("JSON", jsonResults);
 
-  // Pipeline B: input is a JS object
-  // This is the case in most Node.js apps (express req.body, function returns, etc.)
   console.log("\n  [B] JS object -> validation result:");
-  const ataObjOps = bench(`ata  validate(obj)`, N, () => {
-    ataValidator.validate(data);
-  });
-  const ajvObjOps = bench(`ajv  validate(obj)`, N, () => {
-    ajvValidate(data);
-  });
-  console.log(winner(ataObjOps, ajvObjOps));
+  const objResults = [];
+  for (const r of runners) {
+    const ops = bench(`${r.name.padEnd(6)} validate(obj)`, N, () => r.validateObj(data));
+    objResults.push({ name: r.name, ops });
+  }
+  compare("Object", objResults);
 }
 console.log();
