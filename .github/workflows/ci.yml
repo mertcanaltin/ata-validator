@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: [18, 20, 22]
     runs-on: ${{ matrix.os }}
     steps:
@@ -28,6 +28,31 @@ jobs:
       - name: Install RE2 (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libre2-dev libabsl-dev
+
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup vcpkg
+        if: runner.os == 'Windows'
+        run: |
+          C:\vcpkg\bootstrap-vcpkg.bat
+        shell: cmd
+
+      - name: Install RE2 (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          C:\vcpkg\vcpkg install re2:x64-windows-static
+          C:\vcpkg\vcpkg install abseil:x64-windows-static
+        shell: cmd
+
+      - name: Set Toolchain and Triplet
+        if: runner.os == 'Windows'
+        run: |
+          echo "CMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "VCPKG_TARGET_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install dependencies
         run: npm install
