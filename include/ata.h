@@ -11,11 +11,11 @@
 namespace ata {
 
 inline constexpr uint32_t VERSION_MAJOR = 0;
-inline constexpr uint32_t VERSION_MINOR = 4;
-inline constexpr uint32_t VERSION_REVISION = 3;
+inline constexpr uint32_t VERSION_MINOR = 8;
+inline constexpr uint32_t VERSION_REVISION = 0;
 
 inline constexpr std::string_view version() noexcept {
-  return "0.4.3";
+  return "0.8.0";
 }
 
 enum class error_code : uint8_t {

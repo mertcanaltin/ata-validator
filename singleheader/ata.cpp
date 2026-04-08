@@ -1,4 +1,4 @@
-/* auto-generated on 2026-04-07 04:35:23 +0300. Do not edit! */
+/* auto-generated on 2026-04-08 15:08:09 +0300. Do not edit! */
 /* begin file src/ata.cpp */
 #include "ata.h"
 
@@ -57,11 +57,15 @@ static bool fast_check_email(std::string_view s) {
 }
 
 static bool fast_check_date(std::string_view s) {
-  // YYYY-MM-DD
-  return s.size() == 10 && is_digit(s[0]) && is_digit(s[1]) &&
-         is_digit(s[2]) && is_digit(s[3]) && s[4] == '-' &&
-         is_digit(s[5]) && is_digit(s[6]) && s[7] == '-' &&
-         is_digit(s[8]) && is_digit(s[9]);
+  // YYYY-MM-DD with range validation
+  if (s.size() != 10 || !is_digit(s[0]) || !is_digit(s[1]) ||
+      !is_digit(s[2]) || !is_digit(s[3]) || s[4] != '-' ||
+      !is_digit(s[5]) || !is_digit(s[6]) || s[7] != '-' ||
+      !is_digit(s[8]) || !is_digit(s[9]))
+    return false;
+  int month = (s[5] - '0') * 10 + (s[6] - '0');
+  int day = (s[8] - '0') * 10 + (s[9] - '0');
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
 }
 
 static bool fast_check_time(std::string_view s) {
@@ -334,6 +338,8 @@ struct schema_node {
 
   // $ref
   std::string ref;
+  std::string dynamic_ref;    // $dynamicRef value (e.g. "#items")
+  std::string id;             // $id — resource boundary marker
 
   // $defs — stored on node for pointer navigation
   std::unordered_map<std::string, schema_node_ptr> defs;
@@ -425,6 +431,13 @@ struct compiled_schema {
   cg::plan gen_plan;           // codegen validation plan
   bool use_ondemand = false;   // true if codegen plan supports On Demand
   od_plan_ptr od;              // On-Demand execution plan
+
+  // anchor resolution
+  std::unordered_map<std::string, schema_node_ptr> anchors;
+  std::unordered_map<std::string,
+    std::unordered_map<std::string, schema_node_ptr>> resource_dynamic_anchors;
+  bool has_dynamic_refs = false;
+  std::string current_resource_id;  // compile-time only
 };
 
 // Thread-local persistent parsers — reused across all validate calls on the
@@ -472,6 +485,64 @@ static schema_node_ptr compile_node(dom::element el,
     std::string_view ref_sv;
     if (ref_el.get(ref_sv) == SUCCESS) {
       node->ref = std::string(ref_sv);
+    }
+  }
+
+  // $id — must come before $anchor/$dynamicAnchor so current_resource_id is set
+  std::string prev_resource = ctx.current_resource_id;
+  {
+    dom::element id_el;
+    if (obj["$id"].get(id_el) == SUCCESS) {
+      std::string_view sv;
+      if (id_el.get(sv) == SUCCESS) {
+        node->id = std::string(sv);
+        ctx.current_resource_id = node->id;
+        ctx.defs[node->id] = node;
+      }
+    }
+  }
+
+  // $anchor — register in flat anchor map
+  {
+    dom::element anchor_el;
+    if (obj["$anchor"].get(anchor_el) == SUCCESS) {
+      std::string_view sv;
+      if (anchor_el.get(sv) == SUCCESS) {
+        ctx.anchors[std::string(sv)] = node;
+      }
+    }
+  }
+
+  // $dynamicAnchor — register in both flat anchors and per-resource map
+  {
+    dom::element da_el;
+    if (obj["$dynamicAnchor"].get(da_el) == SUCCESS) {
+      std::string_view sv;
+      if (da_el.get(sv) == SUCCESS) {
+        std::string name(sv);
+        ctx.anchors[name] = node;
+        ctx.resource_dynamic_anchors[ctx.current_resource_id][name] = node;
+      }
+    }
+  }
+
+  // $dynamicRef
+  {
+    dom::element dr_el;
+    if (obj["$dynamicRef"].get(dr_el) == SUCCESS) {
+      std::string_view sv;
+      if (dr_el.get(sv) == SUCCESS) {
+        std::string dr_val(sv);
+        // If the $dynamicRef starts with "#" (fragment-only) and we're inside
+        // a non-root resource, qualify it with the current resource ID so
+        // validation can resolve it correctly.
+        if (!dr_val.empty() && dr_val[0] == '#' &&
+            !ctx.current_resource_id.empty()) {
+          dr_val = ctx.current_resource_id + dr_val;
+        }
+        node->dynamic_ref = dr_val;
+        ctx.has_dynamic_refs = true;
+      }
     }
   }
 
@@ -682,15 +753,6 @@ static schema_node_ptr compile_node(dom::element el,
     }
   }
 
-  // $id (register in defs for potential resolution)
-  dom::element id_el;
-  if (obj["$id"].get(id_el) == SUCCESS) {
-    std::string_view sv;
-    if (id_el.get(sv) == SUCCESS) {
-      ctx.defs[std::string(sv)] = node;
-    }
-  }
-
   // enum — pre-minify each value at compile time
   dom::element enum_el;
   if (obj["enum"].get(enum_el) == SUCCESS) {
@@ -766,17 +828,144 @@ static schema_node_ptr compile_node(dom::element el,
     }
   }
 
+  ctx.current_resource_id = prev_resource;
   return node;
 }
 
 // --- Validation ---
+
+using dynamic_scope_t = std::vector<const std::unordered_map<std::string, schema_node_ptr>*>;
+
+// Decode a single JSON Pointer segment (percent-decode, then ~1->/, ~0->~)
+static std::string decode_pointer_segment(const std::string& seg) {
+  std::string pct;
+  for (size_t i = 0; i < seg.size(); ++i) {
+    if (seg[i] == '%' && i + 2 < seg.size()) {
+      auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+        if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+        return -1;
+      };
+      int hv = hex(seg[i+1]), lv = hex(seg[i+2]);
+      if (hv >= 0 && lv >= 0) {
+        pct += static_cast<char>(hv * 16 + lv);
+        i += 2;
+      } else {
+        pct += seg[i];
+      }
+    } else {
+      pct += seg[i];
+    }
+  }
+  std::string out;
+  for (size_t i = 0; i < pct.size(); ++i) {
+    if (pct[i] == '~' && i + 1 < pct.size()) {
+      if (pct[i + 1] == '1') { out += '/'; ++i; }
+      else if (pct[i + 1] == '0') { out += '~'; ++i; }
+      else out += pct[i];
+    } else {
+      out += pct[i];
+    }
+  }
+  return out;
+}
+
+// Walk a JSON Pointer (without leading #) within a given schema node.
+// Returns the resolved node, or nullptr if not found.
+static schema_node_ptr walk_json_pointer(const schema_node_ptr& root_node,
+                                          const std::string& pointer) {
+  if (pointer.empty()) return root_node;
+
+  std::vector<std::string> segments;
+  size_t spos = 0;
+  // pointer starts with "/" — skip leading slash
+  if (!pointer.empty() && pointer[0] == '/') spos = 1;
+  while (spos <= pointer.size()) {
+    size_t snext = pointer.find('/', spos);
+    segments.push_back(decode_pointer_segment(
+        pointer.substr(spos, snext == std::string::npos ? snext : snext - spos)));
+    spos = (snext == std::string::npos) ? pointer.size() + 1 : snext + 1;
+  }
+
+  schema_node_ptr current = root_node;
+  for (size_t si = 0; si < segments.size() && current; ++si) {
+    const auto& key = segments[si];
+    if (key == "properties" && si + 1 < segments.size()) {
+      const auto& prop_name = segments[++si];
+      auto pit = current->properties.find(prop_name);
+      if (pit != current->properties.end()) { current = pit->second; }
+      else { return nullptr; }
+    } else if (key == "items" && current->items_schema) {
+      current = current->items_schema;
+    } else if (key == "$defs" || key == "definitions") {
+      if (si + 1 < segments.size()) {
+        const auto& def_name = segments[++si];
+        auto dit = current->defs.find(def_name);
+        if (dit != current->defs.end()) { current = dit->second; }
+        else { return nullptr; }
+      } else { return nullptr; }
+    } else if (key == "allOf" || key == "anyOf" || key == "oneOf") {
+      if (si + 1 < segments.size()) {
+        size_t idx = std::stoul(segments[++si]);
+        auto& vec = (key == "allOf") ? current->all_of
+                  : (key == "anyOf") ? current->any_of
+                  : current->one_of;
+        if (idx < vec.size()) { current = vec[idx]; }
+        else { return nullptr; }
+      } else { return nullptr; }
+    } else if (key == "not" && current->not_schema) {
+      current = current->not_schema;
+    } else if (key == "if" && current->if_schema) {
+      current = current->if_schema;
+    } else if (key == "then" && current->then_schema) {
+      current = current->then_schema;
+    } else if (key == "else" && current->else_schema) {
+      current = current->else_schema;
+    } else if (key == "additionalProperties" &&
+               current->additional_properties_schema) {
+      current = current->additional_properties_schema;
+    } else if (key == "prefixItems") {
+      if (si + 1 < segments.size()) {
+        size_t idx = std::stoul(segments[++si]);
+        if (idx < current->prefix_items.size()) { current = current->prefix_items[idx]; }
+        else { return nullptr; }
+      } else { return nullptr; }
+    } else if (key == "contains" && current->contains_schema) {
+      current = current->contains_schema;
+    } else if (key == "propertyNames" && current->property_names_schema) {
+      current = current->property_names_schema;
+    } else {
+      return nullptr;
+    }
+  }
+  return current;
+}
+
+// Find an anchor (non-pointer fragment) within a specific resource node by
+// searching its sub-tree.  Used for resolving "base#anchor" references.
+static schema_node_ptr find_anchor_in_resource(const compiled_schema& ctx,
+                                                const std::string& resource_id,
+                                                const std::string& anchor_name) {
+  // Look up in per-resource dynamic anchors first
+  auto rit = ctx.resource_dynamic_anchors.find(resource_id);
+  if (rit != ctx.resource_dynamic_anchors.end()) {
+    auto ait = rit->second.find(anchor_name);
+    if (ait != rit->second.end()) return ait->second;
+  }
+  // Fallback to flat anchors (which includes $anchor entries)
+  auto ait = ctx.anchors.find(anchor_name);
+  if (ait != ctx.anchors.end()) return ait->second;
+  return nullptr;
+}
 
 static void validate_node(const schema_node_ptr& node,
                            dom::element value,
                            const std::string& path,
                            const compiled_schema& ctx,
                            std::vector<validation_error>& errors,
-                           bool all_errors = true);
+                           bool all_errors = true,
+                           dynamic_scope_t* dynamic_scope = nullptr);
 
 // Fast boolean-only tree walker — no error collection, no string allocation.
 // Uses [[likely]]/[[unlikely]] hints. Returns true if valid.
@@ -831,13 +1020,26 @@ static uint64_t utf8_length(std::string_view s) {
   return count;
 }
 
+// Recursion depth guard — prevents stack overflow on self-referencing schemas
+struct DepthGuard {
+  static thread_local int depth;
+  bool overflow;
+  DepthGuard() : overflow(++depth > 100) {}
+  ~DepthGuard() { --depth; }
+};
+thread_local int DepthGuard::depth = 0;
+
 static void validate_node(const schema_node_ptr& node,
                            dom::element value,
                            const std::string& path,
                            const compiled_schema& ctx,
                            std::vector<validation_error>& errors,
-                           bool all_errors) {
+                           bool all_errors,
+                           dynamic_scope_t* dynamic_scope) {
   if (!node) return;
+
+  DepthGuard guard;
+  if (guard.overflow) return;
 
   // Boolean schema
   if (node->boolean_schema.has_value()) {
@@ -848,140 +1050,246 @@ static void validate_node(const schema_node_ptr& node,
     return;
   }
 
+  // Dynamic scope tracking: push this resource's dynamic anchors
+  bool pushed_scope = false;
+  if (dynamic_scope && !node->id.empty()) {
+    auto it = ctx.resource_dynamic_anchors.find(node->id);
+    if (it != ctx.resource_dynamic_anchors.end()) {
+      dynamic_scope->push_back(&it->second);
+      pushed_scope = true;
+    }
+  }
+
   // $ref — Draft 2020-12: $ref is not a short-circuit, sibling keywords still apply
   bool ref_resolved = false;
   if (!node->ref.empty()) {
-    // First check defs map
-    auto it = ctx.defs.find(node->ref);
-    if (it != ctx.defs.end()) {
-      validate_node(it->second, value, path, ctx, errors, all_errors);
+    // Self-reference: "#"
+    if (node->ref == "#" && ctx.root) {
+      validate_node(ctx.root, value, path, ctx, errors, all_errors, dynamic_scope);
       ref_resolved = true;
     }
-    // Try JSON Pointer resolution from root (e.g., "#/properties/foo")
-    if (node->ref.size() > 1 && node->ref[0] == '#' &&
-        node->ref[1] == '/') {
-      // Decode JSON Pointer segments
-      auto decode_pointer_segment = [](const std::string& seg) -> std::string {
-        // Percent-decode first
-        std::string pct;
-        for (size_t i = 0; i < seg.size(); ++i) {
-          if (seg[i] == '%' && i + 2 < seg.size()) {
-            char h = seg[i+1], l = seg[i+2];
-            auto hex = [](char c) -> int {
-              if (c >= '0' && c <= '9') return c - '0';
-              if (c >= 'a' && c <= 'f') return 10 + c - 'a';
-              if (c >= 'A' && c <= 'F') return 10 + c - 'A';
-              return -1;
-            };
-            int hv = hex(h), lv = hex(l);
-            if (hv >= 0 && lv >= 0) {
-              pct += static_cast<char>(hv * 16 + lv);
-              i += 2;
-            } else {
-              pct += seg[i];
-            }
-          } else {
-            pct += seg[i];
+    // Check for "base#fragment" pattern (e.g. "first#/$defs/stuff", "tree.json")
+    if (!ref_resolved) {
+      std::string base_uri;
+      std::string fragment;
+      size_t hash_pos = node->ref.find('#');
+      if (hash_pos != std::string::npos) {
+        base_uri = node->ref.substr(0, hash_pos);
+        fragment = node->ref.substr(hash_pos + 1);
+      } else {
+        base_uri = node->ref;
+      }
+
+      // Helper: push base resource's dynamic anchors to scope, validate, pop
+      auto validate_with_resource_scope = [&](const schema_node_ptr& target,
+                                               const std::string& resource_id) {
+        bool scope_pushed = false;
+        if (dynamic_scope && !resource_id.empty()) {
+          auto rit = ctx.resource_dynamic_anchors.find(resource_id);
+          if (rit != ctx.resource_dynamic_anchors.end()) {
+            dynamic_scope->push_back(&rit->second);
+            scope_pushed = true;
           }
         }
-        // Then JSON Pointer unescape: ~1 -> /, ~0 -> ~
-        std::string out;
-        for (size_t i = 0; i < pct.size(); ++i) {
-          if (pct[i] == '~' && i + 1 < pct.size()) {
-            if (pct[i + 1] == '1') { out += '/'; ++i; }
-            else if (pct[i + 1] == '0') { out += '~'; ++i; }
-            else out += pct[i];
-          } else {
-            out += pct[i];
-          }
-        }
-        return out;
+        validate_node(target, value, path, ctx, errors, all_errors, dynamic_scope);
+        if (scope_pushed) dynamic_scope->pop_back();
       };
 
-      // Split pointer into segments
-      std::string pointer = node->ref.substr(2);
-      std::vector<std::string> segments;
-      size_t spos = 0;
-      while (spos < pointer.size()) {
-        size_t snext = pointer.find('/', spos);
-        segments.push_back(decode_pointer_segment(
-            pointer.substr(spos, snext == std::string::npos ? snext : snext - spos)));
-        spos = (snext == std::string::npos) ? pointer.size() : snext + 1;
-      }
-
-      // Walk the schema tree
-      schema_node_ptr current = ctx.root;
-      bool resolved = true;
-      for (size_t si = 0; si < segments.size() && current; ++si) {
-        const auto& key = segments[si];
-
-        if (key == "properties" && si + 1 < segments.size()) {
-          const auto& prop_name = segments[++si];
-          auto pit = current->properties.find(prop_name);
-          if (pit != current->properties.end()) {
-            current = pit->second;
-          } else { resolved = false; break; }
-        } else if (key == "items" && current->items_schema) {
-          current = current->items_schema;
-        } else if (key == "$defs" || key == "definitions") {
-          if (si + 1 < segments.size()) {
-            const auto& def_name = segments[++si];
-            // Navigate into node's defs map
-            auto dit = current->defs.find(def_name);
-            if (dit != current->defs.end()) {
-              current = dit->second;
+      if (!base_uri.empty()) {
+        // Resolve base URI to a resource via defs
+        auto it = ctx.defs.find(base_uri);
+        if (it != ctx.defs.end()) {
+          schema_node_ptr target = it->second;
+          if (!fragment.empty()) {
+            if (fragment[0] == '/') {
+              // JSON Pointer within the resource
+              auto resolved = walk_json_pointer(target, fragment);
+              if (resolved) {
+                validate_with_resource_scope(resolved, base_uri);
+                ref_resolved = true;
+              }
             } else {
-              // Fallback: try ctx.defs with full path
-              std::string full_ref = "#/" + key + "/" + def_name;
-              auto cit = ctx.defs.find(full_ref);
-              if (cit != ctx.defs.end()) {
-                current = cit->second;
-              } else { resolved = false; break; }
+              // Anchor lookup within the resource
+              auto resolved = find_anchor_in_resource(ctx, base_uri, fragment);
+              if (resolved) {
+                validate_with_resource_scope(resolved, base_uri);
+                ref_resolved = true;
+              }
             }
-          } else { resolved = false; break; }
-        } else if (key == "allOf" || key == "anyOf" || key == "oneOf") {
-          if (si + 1 < segments.size()) {
-            size_t idx = std::stoul(segments[++si]);
-            auto& vec = (key == "allOf") ? current->all_of
-                      : (key == "anyOf") ? current->any_of
-                      : current->one_of;
-            if (idx < vec.size()) { current = vec[idx]; }
-            else { resolved = false; break; }
-          } else { resolved = false; break; }
-        } else if (key == "not" && current->not_schema) {
-          current = current->not_schema;
-        } else if (key == "if" && current->if_schema) {
-          current = current->if_schema;
-        } else if (key == "then" && current->then_schema) {
-          current = current->then_schema;
-        } else if (key == "else" && current->else_schema) {
-          current = current->else_schema;
-        } else if (key == "additionalProperties" &&
-                   current->additional_properties_schema) {
-          current = current->additional_properties_schema;
-        } else if (key == "prefixItems") {
-          if (si + 1 < segments.size()) {
-            size_t idx = std::stoul(segments[++si]);
-            if (idx < current->prefix_items.size()) { current = current->prefix_items[idx]; }
-            else { resolved = false; break; }
-          } else { resolved = false; break; }
+          } else {
+            // No fragment, just the base resource (it pushes its own scope)
+            validate_node(target, value, path, ctx, errors, all_errors, dynamic_scope);
+            ref_resolved = true;
+          }
+        }
+      } else if (!fragment.empty()) {
+        // "#fragment" — no base URI
+        if (fragment[0] == '/') {
+          // JSON Pointer from root
+          auto resolved = walk_json_pointer(ctx.root, fragment);
+          if (resolved) {
+            validate_node(resolved, value, path, ctx, errors, all_errors, dynamic_scope);
+            ref_resolved = true;
+          }
         } else {
-          resolved = false; break;
+          // Anchor lookup
+          auto ait = ctx.anchors.find(fragment);
+          if (ait != ctx.anchors.end()) {
+            validate_node(ait->second, value, path, ctx, errors, all_errors, dynamic_scope);
+            ref_resolved = true;
+          }
         }
       }
-      if (resolved && current) {
-        validate_node(current, value, path, ctx, errors, all_errors);
+    }
+    // Fallback: try defs map directly (handles bare $id references like "list")
+    if (!ref_resolved) {
+      auto it = ctx.defs.find(node->ref);
+      if (it != ctx.defs.end()) {
+        validate_node(it->second, value, path, ctx, errors, all_errors, dynamic_scope);
         ref_resolved = true;
       }
     }
-    // Self-reference: "#"
-    if (!ref_resolved && node->ref == "#" && ctx.root) {
-      validate_node(ctx.root, value, path, ctx, errors, all_errors);
-      ref_resolved = true;
+    // Fallback: relative URI resolution — match ref against defs keys by suffix
+    if (!ref_resolved && !node->ref.empty() && node->ref[0] != '#') {
+      std::string suffix = "/" + node->ref;
+      for (const auto& [key, def_node] : ctx.defs) {
+        if (key.size() >= suffix.size() &&
+            key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0) {
+          validate_node(def_node, value, path, ctx, errors, all_errors, dynamic_scope);
+          ref_resolved = true;
+          break;
+        }
+      }
     }
     if (!ref_resolved) {
       errors.push_back({error_code::ref_not_found, path,
                         "cannot resolve $ref: " + node->ref});
+    }
+  }
+
+  // $dynamicRef — Draft 2020-12 dynamic scope resolution
+  if (!node->dynamic_ref.empty()) {
+    bool dref_resolved = false;
+
+    // Parse the $dynamicRef value into base URI and fragment
+    std::string dr_base;
+    std::string dr_fragment;
+    {
+      size_t hash_pos = node->dynamic_ref.find('#');
+      if (hash_pos != std::string::npos) {
+        dr_base = node->dynamic_ref.substr(0, hash_pos);
+        dr_fragment = node->dynamic_ref.substr(hash_pos + 1);
+      } else {
+        dr_base = node->dynamic_ref;
+      }
+    }
+
+    // Helper: push base resource's dynamic anchors to scope temporarily
+    auto push_resource_scope = [&](const std::string& resource_id) -> bool {
+      if (dynamic_scope && !resource_id.empty()) {
+        auto rit = ctx.resource_dynamic_anchors.find(resource_id);
+        if (rit != ctx.resource_dynamic_anchors.end()) {
+          dynamic_scope->push_back(&rit->second);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // If fragment is a JSON pointer (starts with /), resolve like $ref
+    if (!dr_fragment.empty() && dr_fragment[0] == '/') {
+      schema_node_ptr base_node = dr_base.empty() ? ctx.root : nullptr;
+      if (!dr_base.empty()) {
+        auto it = ctx.defs.find(dr_base);
+        if (it != ctx.defs.end()) base_node = it->second;
+      }
+      if (base_node) {
+        auto resolved = walk_json_pointer(base_node, dr_fragment);
+        if (resolved) {
+          bool dr_scope_pushed = push_resource_scope(dr_base);
+          validate_node(resolved, value, path, ctx, errors, all_errors, dynamic_scope);
+          if (dr_scope_pushed) dynamic_scope->pop_back();
+          dref_resolved = true;
+        }
+      }
+    }
+
+    // If fragment is an anchor name (not a JSON pointer)
+    if (!dref_resolved && !dr_fragment.empty() && dr_fragment[0] != '/') {
+      std::string anchor_name = dr_fragment;
+
+      // Initial resolution: find the anchor
+      schema_node_ptr target = nullptr;
+
+      if (!dr_base.empty()) {
+        // Resolve base URI first, then find anchor in that resource
+        auto it = ctx.defs.find(dr_base);
+        if (it != ctx.defs.end()) {
+          target = find_anchor_in_resource(ctx, dr_base, anchor_name);
+        }
+      } else {
+        // No base URI — look up in flat anchors map
+        auto ait = ctx.anchors.find(anchor_name);
+        if (ait != ctx.anchors.end()) {
+          target = ait->second;
+        }
+      }
+
+      if (target) {
+        // Check if the initially resolved target is itself a $dynamicAnchor
+        // (the "bookend" requirement). Only do dynamic scope walk if the
+        // initial target's resource has a $dynamicAnchor with this name.
+        bool is_dynamic_at_initial = false;
+        if (!dr_base.empty()) {
+          // We resolved via a specific base URI
+          auto rit = ctx.resource_dynamic_anchors.find(dr_base);
+          if (rit != ctx.resource_dynamic_anchors.end() &&
+              rit->second.count(anchor_name)) {
+            is_dynamic_at_initial = true;
+          }
+        } else {
+          // No base URI — check if ANY resource has this as $dynamicAnchor
+          // and the target matches (i.e., the initially resolved node IS a
+          // $dynamicAnchor node)
+          for (const auto& [rid, rmap] : ctx.resource_dynamic_anchors) {
+            auto ait2 = rmap.find(anchor_name);
+            if (ait2 != rmap.end() && ait2->second == target) {
+              is_dynamic_at_initial = true;
+              break;
+            }
+          }
+        }
+
+        // Dynamic scope walk: find first override in dynamic scope
+        if (is_dynamic_at_initial && dynamic_scope) {
+          for (size_t i = 0; i < dynamic_scope->size(); ++i) {
+            auto dit = (*dynamic_scope)[i]->find(anchor_name);
+            if (dit != (*dynamic_scope)[i]->end()) {
+              target = dit->second;
+              break;
+            }
+          }
+        }
+
+        bool dr_scope_pushed = push_resource_scope(dr_base);
+        validate_node(target, value, path, ctx, errors, all_errors, dynamic_scope);
+        if (dr_scope_pushed) dynamic_scope->pop_back();
+        dref_resolved = true;
+      }
+    }
+
+    // Bare $dynamicRef without fragment (unusual, but handle it)
+    if (!dref_resolved && dr_fragment.empty() && !dr_base.empty()) {
+      auto it = ctx.defs.find(dr_base);
+      if (it != ctx.defs.end()) {
+        validate_node(it->second, value, path, ctx, errors, all_errors, dynamic_scope);
+        dref_resolved = true;
+      }
+    }
+
+    if (!dref_resolved) {
+      errors.push_back({error_code::ref_not_found, path,
+                        "cannot resolve $dynamicRef: " + node->dynamic_ref});
     }
   }
 
@@ -1164,10 +1472,10 @@ static void validate_node(const schema_node_ptr& node,
       for (auto item : arr) {
         if (idx < node->prefix_items.size()) {
           validate_node(node->prefix_items[idx], item,
-                        path + "/" + std::to_string(idx), ctx, errors, all_errors);
+                        path + "/" + std::to_string(idx), ctx, errors, all_errors, dynamic_scope);
         } else if (node->items_schema) {
           validate_node(node->items_schema, item,
-                        path + "/" + std::to_string(idx), ctx, errors, all_errors);
+                        path + "/" + std::to_string(idx), ctx, errors, all_errors, dynamic_scope);
         }
         ++idx;
       }
@@ -1234,7 +1542,7 @@ static void validate_node(const schema_node_ptr& node,
       // Check properties
       auto it = node->properties.find(key_str);
       if (it != node->properties.end()) {
-        validate_node(it->second, val, path + "/" + key_str, ctx, errors, all_errors);
+        validate_node(it->second, val, path + "/" + key_str, ctx, errors, all_errors, dynamic_scope);
         matched = true;
       }
 
@@ -1242,7 +1550,7 @@ static void validate_node(const schema_node_ptr& node,
       for (const auto& pp : node->pattern_properties) {
 #ifndef ATA_NO_RE2
         if (pp.compiled && re2::RE2::PartialMatch(key_str, *pp.compiled)) {
-          validate_node(pp.schema, val, path + "/" + key_str, ctx, errors, all_errors);
+          validate_node(pp.schema, val, path + "/" + key_str, ctx, errors, all_errors, dynamic_scope);
           matched = true;
         }
 #endif
@@ -1257,7 +1565,7 @@ static void validate_node(const schema_node_ptr& node,
                "additional property not allowed: " + key_str});
         } else if (node->additional_properties_schema) {
           validate_node(node->additional_properties_schema, val,
-                        path + "/" + key_str, ctx, errors);
+                        path + "/" + key_str, ctx, errors, all_errors, dynamic_scope);
         }
       }
     }
@@ -1305,7 +1613,7 @@ static void validate_node(const schema_node_ptr& node,
           std::string key_json = "\"" + std::string(key) + "\"";
           auto key_result = tl_dom_key_parser().parse(key_json);
           if (!key_result.error()) {
-            validate_node(pn, key_result.value(), path, ctx, errors, all_errors);
+            validate_node(pn, key_result.value(), path, ctx, errors, all_errors, dynamic_scope);
           }
         }
       }
@@ -1330,7 +1638,7 @@ static void validate_node(const schema_node_ptr& node,
     for (const auto& [prop, schema] : node->dependent_schemas) {
       dom::element dummy;
       if (obj[prop].get(dummy) == SUCCESS) {
-        validate_node(schema, value, path, ctx, errors, all_errors);
+        validate_node(schema, value, path, ctx, errors, all_errors, dynamic_scope);
       }
     }
   }
@@ -1339,7 +1647,7 @@ static void validate_node(const schema_node_ptr& node,
   if (!node->all_of.empty()) {
     for (const auto& sub : node->all_of) {
       std::vector<validation_error> sub_errors;
-      validate_node(sub, value, path, ctx, sub_errors, all_errors);
+      validate_node(sub, value, path, ctx, sub_errors, all_errors, dynamic_scope);
       if (!sub_errors.empty()) {
         errors.push_back({error_code::all_of_failed, path,
                           "allOf subschema failed"});
@@ -1353,7 +1661,7 @@ static void validate_node(const schema_node_ptr& node,
     bool any_valid = false;
     for (const auto& sub : node->any_of) {
       std::vector<validation_error> sub_errors;
-      validate_node(sub, value, path, ctx, sub_errors, all_errors);
+      validate_node(sub, value, path, ctx, sub_errors, all_errors, dynamic_scope);
       if (sub_errors.empty()) {
         any_valid = true;
         break;
@@ -1370,7 +1678,7 @@ static void validate_node(const schema_node_ptr& node,
     int match_count = 0;
     for (const auto& sub : node->one_of) {
       std::vector<validation_error> sub_errors;
-      validate_node(sub, value, path, ctx, sub_errors, all_errors);
+      validate_node(sub, value, path, ctx, sub_errors, all_errors, dynamic_scope);
       if (sub_errors.empty()) ++match_count;
     }
     if (match_count != 1) {
@@ -1383,7 +1691,7 @@ static void validate_node(const schema_node_ptr& node,
   // not
   if (node->not_schema) {
     std::vector<validation_error> sub_errors;
-    validate_node(node->not_schema, value, path, ctx, sub_errors, all_errors);
+    validate_node(node->not_schema, value, path, ctx, sub_errors, all_errors, dynamic_scope);
     if (sub_errors.empty()) {
       errors.push_back({error_code::not_failed, path,
                         "value should not match 'not' schema"});
@@ -1393,19 +1701,21 @@ static void validate_node(const schema_node_ptr& node,
   // if/then/else
   if (node->if_schema) {
     std::vector<validation_error> if_errors;
-    validate_node(node->if_schema, value, path, ctx, if_errors, all_errors);
+    validate_node(node->if_schema, value, path, ctx, if_errors, all_errors, dynamic_scope);
     if (if_errors.empty()) {
       // if passed → validate then
       if (node->then_schema) {
-        validate_node(node->then_schema, value, path, ctx, errors, all_errors);
+        validate_node(node->then_schema, value, path, ctx, errors, all_errors, dynamic_scope);
       }
     } else {
       // if failed → validate else
       if (node->else_schema) {
-        validate_node(node->else_schema, value, path, ctx, errors, all_errors);
+        validate_node(node->else_schema, value, path, ctx, errors, all_errors, dynamic_scope);
       }
     }
   }
+
+  if (pushed_scope) dynamic_scope->pop_back();
 }
 
 // Fast boolean-only tree walker — stripped of all error collection.
@@ -1416,14 +1726,27 @@ static bool validate_fast(const schema_node_ptr& node,
                            const compiled_schema& ctx) {
   if (!node) [[unlikely]] return true;
 
+  DepthGuard guard;
+  if (guard.overflow) [[unlikely]] return true;
+
   if (node->boolean_schema.has_value()) [[unlikely]]
     return node->boolean_schema.value();
+
+  // $dynamicRef — bail to tree walker
+  if (!node->dynamic_ref.empty()) [[unlikely]] return false;
 
   // $ref
   if (!node->ref.empty()) [[unlikely]] {
     auto it = ctx.defs.find(node->ref);
     if (it != ctx.defs.end()) {
       if (!validate_fast(it->second, value, ctx)) return false;
+    } else if (node->ref.size() > 1 && node->ref[0] == '#' && node->ref[1] != '/') {
+      auto ait = ctx.anchors.find(node->ref.substr(1));
+      if (ait != ctx.anchors.end()) {
+        if (!validate_fast(ait->second, value, ctx)) return false;
+      } else {
+        return false;
+      }
     } else if (node->ref == "#" && ctx.root) {
       if (!validate_fast(ctx.root, value, ctx)) return false;
     } else {
@@ -1648,8 +1971,9 @@ static void cg_compile(const schema_node* n, cg::plan& p,
     return;
   }
   // Composition fallback
-  if (!n->ref.empty() || !n->all_of.empty() || !n->any_of.empty() ||
-      !n->one_of.empty() || n->not_schema || n->if_schema) {
+  if (!n->ref.empty() || !n->dynamic_ref.empty() || !n->all_of.empty() ||
+      !n->any_of.empty() || !n->one_of.empty() || n->not_schema ||
+      n->if_schema) {
     uintptr_t ptr = reinterpret_cast<uintptr_t>(n);
     out.push_back({cg::op::COMPOSITION, (uint32_t)(ptr & 0xFFFFFFFF),
                    (uint32_t)((ptr >> 32) & 0xFFFFFFFF)});
@@ -2341,8 +2665,24 @@ validation_result validate(const schema_ref& schema, std::string_view json,
 
   // Slow path: tree walker with error details (reuse already-parsed DOM)
   std::vector<validation_error> errors;
-  validate_node(schema.impl->root, result.value(), "", *schema.impl, errors,
-                opts.all_errors);
+  if (schema.impl->has_dynamic_refs) {
+    dynamic_scope_t scope;
+    auto rit = schema.impl->resource_dynamic_anchors.find("");
+    if (rit != schema.impl->resource_dynamic_anchors.end()) {
+      scope.push_back(&rit->second);
+    }
+    if (!schema.impl->root->id.empty()) {
+      auto iit = schema.impl->resource_dynamic_anchors.find(schema.impl->root->id);
+      if (iit != schema.impl->resource_dynamic_anchors.end()) {
+        scope.push_back(&iit->second);
+      }
+    }
+    validate_node(schema.impl->root, result.value(), "", *schema.impl, errors,
+                  opts.all_errors, &scope);
+  } else {
+    validate_node(schema.impl->root, result.value(), "", *schema.impl, errors,
+                  opts.all_errors);
+  }
 
   return {errors.empty(), std::move(errors)};
 }
