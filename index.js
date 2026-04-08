@@ -519,25 +519,29 @@ class Validator {
       }
 
       if (hasDynRef && _isCodegen && jsFn) {
-        // $dynamicRef with JS codegen: use codegen jsFn for bool, errFn for errors
+        // $dynamicRef with JS codegen: direct path, no wrapper layers
+        const _fn = jsFn, _efn = safeErrFn || errFn, _R = VALID_RESULT;
         this.validate = preprocess
-          ? (data) => { preprocess(data); return jsFn(data) ? VALID_RESULT : errFn(data); }
-          : (data) => jsFn(data) ? VALID_RESULT : errFn(data);
+          ? (data) => { preprocess(data); return _fn(data) ? _R : _efn(data); }
+          : (data) => _fn(data) ? _R : _efn(data);
       } else if (hasDynRef) {
         // $dynamicRef without codegen: delegate to native C++ (interpretive path unreliable)
         this.validate = preprocess
           ? (data) => { preprocess(data); return errFn(data); }
           : errFn;
-      } else if (safeCombinedFn) {
-        // Combined: single function, returns VALID_RESULT for valid, error object for invalid
+      } else if (jsFn && jsFn._hybridFactory) {
+        // Zero-wrapper: hybridFactory bakes VALID_RESULT + errFn into a single function
+        // No arrow function wrapper, no ternary, one function call
+        const hybridFn = jsFn._hybridFactory(VALID_RESULT, safeCombinedFn || errFn);
         this.validate = preprocess
-          ? (data) => {
-              preprocess(data);
-              return safeCombinedFn(data);
-            }
+          ? (data) => { preprocess(data); return hybridFn(data); }
+          : hybridFn;
+      } else if (safeCombinedFn) {
+        this.validate = preprocess
+          ? (data) => { preprocess(data); return safeCombinedFn(data); }
           : safeCombinedFn;
       } else {
-        const hybridFn = jsFn._hybridFactory
+        const hybridFn = jsFn && jsFn._hybridFactory
           ? jsFn._hybridFactory(VALID_RESULT, errFn)
           : null;
         this.validate = hybridFn

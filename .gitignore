@@ -11,3 +11,4 @@ build_cmake/
 .cache/
 .DS_Store
 docs/superpowers/
+benchmark/profile_*.mjs
