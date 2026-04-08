@@ -88,9 +88,21 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 
 **Adaptive simdjson**: For large documents (>8KB) with selective schemas, simdjson On Demand seeks only the needed fields - skipping irrelevant data at GB/s speeds.
 
+### $dynamicRef / $dynamicAnchor / $anchor
+
+| Scenario | ata | ajv | |
+|---|---|---|---|
+| **$dynamicRef tree** valid | 19ns | 50ns | **ata 2.6x faster** |
+| **$dynamicRef tree** invalid | 62ns | 74ns | **ata 1.2x faster** |
+| **$dynamicRef override** valid | 1.9ns | 179ns | **ata 94x faster** |
+| **$dynamicRef override** invalid | 49ns | 180ns | **ata 3.7x faster** |
+| **$anchor array** valid | 1.5ns | 2.5ns | **ata 1.7x faster** |
+
+Self-recursive named functions for $dynamicRef, compile-time cross-schema resolution, zero-wrapper hybrid path. [Benchmark code](benchmark/bench_dynamicref_vs_ajv.mjs)
+
 ### JSON Schema Test Suite
 
-**96.9%** pass rate (1109/1144) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12).
+**94.2%** pass rate (1156/1227) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12). **95.3%** on [@exodus/schemasafe](https://github.com/ExodusMovement/schemasafe) test suite.
 
 ## When to use ata
 
@@ -106,12 +118,13 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 
 ## When to use ajv
 
-- **`$dynamicRef`** - not yet supported in ata
 - **Existing ajv ecosystem** - plugins, custom keywords, large community
+- **Full unevaluatedProperties/Items** - ata covers most cases but some edge cases remain
 
 ## Features
 
-- **Hybrid validator**: 6.8x faster than ajv valid, 6.0x faster invalid on complex schemas - jsFn boolean guard for valid path (zero allocation), combined codegen with pre-allocated errors for invalid path. Schema compilation cache for repeated schemas
+- **Hybrid validator**: 5.3x faster than ajv valid, up to 94x faster on $dynamicRef - zero-wrapper hybrid path for valid data (no allocation), combined codegen for error collection. Schema compilation cache for repeated schemas
+- **$dynamicRef / $dynamicAnchor / $anchor**: Full Draft 2020-12 dynamic reference support. Self-recursive named functions, compile-time cross-schema resolution (42/42 spec tests)
 - **Cross-schema `$ref`**: `schemas` option and `addSchema()` API. Compile-time resolution with `$id` registry, zero runtime overhead
 - **Draft 7 support**: Auto-detects `$schema` field, normalizes `dependencies`/`additionalItems`/`definitions` transparently
 - **Multi-core**: Parallel validation across all CPU cores - 13.4M validations/sec
