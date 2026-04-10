@@ -8,6 +8,8 @@
 #include <variant>
 #include <vector>
 
+#define ATA_VERSION "0.8.0"
+
 namespace ata {
 
 inline constexpr uint32_t VERSION_MAJOR = 0;

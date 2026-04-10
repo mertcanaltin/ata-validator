@@ -1611,7 +1611,7 @@ static void validate_node(const schema_node_ptr& node,
           std::string key_json = "\"" + std::string(key) + "\"";
           auto key_result = tl_dom_key_parser().parse(key_json);
           if (!key_result.error()) {
-            validate_node(pn, key_result.value(), path, ctx, errors, all_errors, dynamic_scope);
+            validate_node(pn, key_result.value_unsafe(), path, ctx, errors, all_errors, dynamic_scope);
           }
         }
       }
@@ -2157,7 +2157,9 @@ static bool cg_exec(const cg::plan& p, const std::vector<cg::ins>& code,
 // Returns: true = valid, false = invalid OR unsupported (fallback to DOM).
 
 static json_type od_type(simdjson::ondemand::value& v) {
-  switch (v.type()) {
+  simdjson::ondemand::json_type jt;
+  if (v.type().get(jt)) return json_type::null_value;
+  switch (jt) {
     case simdjson::ondemand::json_type::object: return json_type::object;
     case simdjson::ondemand::json_type::array: return json_type::array;
     case simdjson::ondemand::json_type::string: return json_type::string;
@@ -2260,7 +2262,8 @@ static bool od_exec(const cg::plan& p, const std::vector<cg::ins>& code,
       }
       for(auto field:o){
         simdjson::ondemand::raw_json_string rk; if(field.key().get(rk)!=SUCCESS) return false;
-        std::string_view key = field.unescaped_key();
+        std::string_view key;
+        if (field.unescaped_key().get(key)) continue;
         bool matched=false;
         for(auto& pp:props){
           if(key==pp.nm){
@@ -2539,7 +2542,8 @@ static bool od_exec_plan(const od_plan& plan, simdjson::ondemand::value value) {
     uint64_t prop_count = 0;
 
     for (auto field : obj) {
-      std::string_view key = field.unescaped_key();
+      std::string_view key;
+      if (field.unescaped_key().get(key)) continue;
       prop_count++;
 
       // Single merged scan: required + property in one pass
@@ -2600,7 +2604,7 @@ schema_ref compile(std::string_view schema_json) {
   if (result.error()) {
     return schema_ref{nullptr};
   }
-  doc = result.value();
+  doc = result.value_unsafe();
 
   ctx->root = compile_node(doc, *ctx);
 
@@ -2655,7 +2659,7 @@ validation_result validate(const schema_ref& schema, std::string_view json,
   // Fast path: codegen bytecode execution (DOM)
   if (!schema.impl->use_ondemand && !schema.impl->gen_plan.code.empty()) {
     if (cg_exec(schema.impl->gen_plan, schema.impl->gen_plan.code,
-                result.value())) {
+                result.value_unsafe())) {
       return {true, {}};
     }
     // Codegen said invalid OR hit COMPOSITION — fall through to tree walker
@@ -2675,10 +2679,10 @@ validation_result validate(const schema_ref& schema, std::string_view json,
         scope.push_back(&iit->second);
       }
     }
-    validate_node(schema.impl->root, result.value(), "", *schema.impl, errors,
+    validate_node(schema.impl->root, result.value_unsafe(), "", *schema.impl, errors,
                   opts.all_errors, &scope);
   } else {
-    validate_node(schema.impl->root, result.value(), "", *schema.impl, errors,
+    validate_node(schema.impl->root, result.value_unsafe(), "", *schema.impl, errors,
                   opts.all_errors);
   }
 
@@ -2721,10 +2725,10 @@ bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t lengt
   if (result.error()) return false;
 
   if (!schema.impl->gen_plan.code.empty()) {
-    return cg_exec(schema.impl->gen_plan, schema.impl->gen_plan.code, result.value());
+    return cg_exec(schema.impl->gen_plan, schema.impl->gen_plan.code, result.value_unsafe());
   }
 
-  return validate_fast(schema.impl->root, result.value(), *schema.impl);
+  return validate_fast(schema.impl->root, result.value_unsafe(), *schema.impl);
 }
 
 bool is_valid_buf(const schema_ref& schema, const uint8_t* data, size_t length) {

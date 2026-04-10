@@ -1,4 +1,4 @@
-/* auto-generated on 2026-04-08 15:08:09 +0300. Do not edit! */
+/* auto-generated on 2026-04-10 20:35:19 +0300. Do not edit! */
 /* begin file include/ata.h */
 #pragma once
 
@@ -9,6 +9,8 @@
 #include <string_view>
 #include <variant>
 #include <vector>
+
+#define ATA_VERSION "0.8.0"
 
 namespace ata {
 
