@@ -92,22 +92,22 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **$dynamicRef tree** valid | 19ns | 50ns | **ata 2.6x faster** |
-| **$dynamicRef tree** invalid | 62ns | 74ns | **ata 1.2x faster** |
-| **$dynamicRef override** valid | 1.9ns | 179ns | **ata 94x faster** |
-| **$dynamicRef override** invalid | 49ns | 180ns | **ata 3.7x faster** |
-| **$anchor array** valid | 1.5ns | 2.5ns | **ata 1.7x faster** |
+| **$dynamicRef tree** valid | 22ns | 54ns | **ata 2.4x faster** |
+| **$dynamicRef tree** invalid | 70ns | 76ns | **ata 1.1x faster** |
+| **$dynamicRef override** valid | 2.6ns | 183ns | **ata 70x faster** |
+| **$dynamicRef override** invalid | 48ns | 185ns | **ata 3.8x faster** |
+| **$anchor array** valid | 2.3ns | 3.1ns | **ata 1.4x faster** |
 
 Self-recursive named functions for $dynamicRef, compile-time cross-schema resolution, zero-wrapper hybrid path. [Benchmark code](benchmark/bench_dynamicref_vs_ajv.mjs)
 
 ### JSON Schema Test Suite
 
-**94.2%** pass rate (1156/1227) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12). **95.3%** on [@exodus/schemasafe](https://github.com/ExodusMovement/schemasafe) test suite.
+**95.3%** pass rate (1170/1227) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12). **95.3%** on [@exodus/schemasafe](https://github.com/ExodusMovement/schemasafe) test suite.
 
 ## When to use ata
 
-- **High-throughput `validate(obj)`** - 6.8x faster than ajv on complex schemas, 38x faster than zod
-- **Complex schemas** - `patternProperties`, `dependentSchemas`, `propertyNames`, `unevaluatedProperties` all inline JS codegen (6.8x faster than ajv)
+- **High-throughput `validate(obj)`** - 3.1x faster than ajv, 38x faster than zod
+- **Complex schemas** - `patternProperties`, `dependentSchemas`, `propertyNames`, `unevaluatedProperties` all inline JS codegen
 - **Multi-schema projects** - cross-schema `$ref` with `$id` registry, `addSchema()` API
 - **Draft 7 migration** - auto-detects `$schema`, normalizes Draft 7 keywords transparently
 - **Serverless / cold starts** - 6,904x faster compilation, 5,148x faster first validation
