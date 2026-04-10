@@ -264,6 +264,10 @@ function buildPreprocessCodegen(schema, options) {
 // Schema compilation cache: same schema string -> reuse compiled functions
 const _compileCache = new Map();
 
+// Object identity cache: same schema object reference -> reuse entire compiled state
+// Skips JSON.stringify, cache lookup, and all setup. Near-zero cost for repeated schemas.
+const _identityCache = new WeakMap();
+
 const SIMDJSON_PADDING = 64;
 const VALID_RESULT = Object.freeze({ valid: true, errors: Object.freeze([]) });
 
@@ -321,6 +325,14 @@ class Validator {
   constructor(schema, opts) {
     const options = opts || {};
     const schemaObj = typeof schema === "string" ? JSON.parse(schema) : schema;
+
+    // Ultra-fast path: same schema object reference -> return cached instance
+    // JS constructor returning an object makes `new` return that object
+    // Cost: one WeakMap lookup. No property copy, no setup, nothing.
+    if (!opts && typeof schema === "object" && schema !== null) {
+      const hit = _identityCache.get(schema);
+      if (hit) return hit;
+    }
 
     // Draft 7 normalization — convert keywords to 2020-12 equivalents in-place
     normalizeDraft7(schemaObj);
@@ -702,6 +714,11 @@ class Validator {
           return valid;
         };
       }
+    }
+
+    // Save to identity cache for ultra-fast reuse with same schema object
+    if (this._schemaObj && typeof this._schemaObj === 'object') {
+      _identityCache.set(this._schemaObj, this);
     }
   }
 
