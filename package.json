@@ -19,7 +19,8 @@
       "types": "./compat.d.ts",
       "import": "./compat.mjs",
       "require": "./compat.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "sideEffects": false,
   "browser": {
