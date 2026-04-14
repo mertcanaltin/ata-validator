@@ -94,7 +94,7 @@ jobs:
           docker run --rm --platform ${{ matrix.platform }} \
             -v ${{ github.workspace }}:/work -w /work \
             node:22-alpine sh -c "
-              apk add --no-cache python3 make g++ cmake re2-dev abseil-cpp-dev linux-headers &&
+              apk add --no-cache git python3 make g++ cmake re2-dev abseil-cpp-dev linux-headers &&
               npm install &&
               npx pkg-prebuilds-copy --baseDir build/Release --source ata.node --name=ata --strip --napi_version=10 --libc=musl
             "
