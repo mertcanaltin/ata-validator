@@ -70,7 +70,8 @@ test("plan: minimum/maximum numeric fields", () => {
   const c = plan.constraints[0];
   assert(c.min === 0);
   assert(c.max === 150);
-  assert(Number.isNaN(c.exclMin));
+  // numFlags: F_MIN (1) | F_MAX (2) = 3; exclMin/exclMax/mult bits not set
+  assert(c.numFlags === 3, `numFlags=${c.numFlags} expected 3`);
 });
 
 test("plan: const value", () => {
