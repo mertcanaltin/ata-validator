@@ -1,0 +1,71 @@
+[90mclk: ~4.38 GHz[0m
+[90mcpu: Apple M4 Pro[0m
+[90mruntime: node 25.2.1 (arm64-darwin)[0m
+
+benchmark                   avg (min … max) p75 / p99    (min … top 1%)
+------------------------------------------- -------------------------------
+• S1 warm-cached: construct + 1 validate (same schema object reused)
+[90m------------------------------------------- -------------------------------[0m
+ata (this)                   [1m[33m649.09 ns[0m[1m/iter[0m [90m500.00 ns[0m [36m  █   [0m[33m [0m[35m              [0m
+                      [90m([0m[36m375.00 ns[0m[90m … [0m[35m5.77 ms[0m[90m)[0m [90m  1.29 µs[0m [36m  ██  [0m[33m [0m[35m              [0m
+                    [90m([0m[33m  1.12 kb[0m[90m … [0m[33m249.34 kb[0m[90m) [0m[33m  1.62 kb[0m [36m▁▂██▅▄[0m[33m▃[0m[35m▂▁▁▁▁▁▁▁▁▁▁▁▁▁[0m
+
+ajv compile + validate       [1m[33m  1.38 ms[0m[1m/iter[0m [90m  1.48 ms[0m [36m ▇█  [0m[33m [0m[35m               [0m
+                        [90m([0m[36m1.16 ms[0m[90m … [0m[35m2.55 ms[0m[90m)[0m [90m  2.08 ms[0m [36m ██▅▄[0m[33m [0m[35m               [0m
+                    [90m([0m[33m949.18 kb[0m[90m … [0m[33m  7.44 mb[0m[90m) [0m[33m  2.92 mb[0m [36m▆████[0m[33m█[0m[35m██▆▇▆▂▃▂▃▂▁▂▁▂▁[0m
+
+ajv precompiled (baseline)   [1m[33m  8.46 ns[0m[1m/iter[0m [90m  8.68 ns[0m [36m █  [0m[33m▂[0m[35m                [0m
+                       [90m([0m[36m7.36 ns[0m[90m … [0m[35m52.88 ns[0m[90m)[0m [90m 12.36 ns[0m [36m █  [0m[33m█[0m[35m                [0m
+                    [90m([0m[33m 15.65  b[0m[90m … [0m[33m104.11  b[0m[90m) [0m[33m 56.05  b[0m [36m██▇▅[0m[33m█[0m[35m█▅▇▃▂▂▂▂▂▁▁▁▁▁▁▁[0m
+
+[1msummary[0m
+  [1m[36majv precompiled (baseline)[0m
+   [32m76.74[0mx faster than [1m[36mata (this)[0m
+   [32m163728.62[0mx faster than [1m[36majv compile + validate[0m
+
+• S2 warm-cached: 10 props with enum/format
+[90m------------------------------------------- -------------------------------[0m
+ata (this)                   [1m[33m933.58 ns[0m[1m/iter[0m [90m792.00 ns[0m [36m   █     [0m[33m [0m[35m           [0m
+                      [90m([0m[36m666.00 ns[0m[90m … [0m[35m3.66 ms[0m[90m)[0m [90m  1.25 µs[0m [36m   █▃    [0m[33m [0m[35m           [0m
+                    [90m([0m[33m  1.53 kb[0m[90m … [0m[33m218.55 kb[0m[90m) [0m[33m  1.55 kb[0m [36m▁▃▁██▁▃▃▁[0m[33m▁[0m[35m▂▂▁▁▂▁▁▁▁▁▁[0m
+
+ajv compile + validate       [1m[33m  1.51 ms[0m[1m/iter[0m [90m  1.57 ms[0m [36m ▂█▂[0m[33m [0m[35m                [0m
+                        [90m([0m[36m1.33 ms[0m[90m … [0m[35m2.44 ms[0m[90m)[0m [90m  2.17 ms[0m [36m ███[0m[33m▃[0m[35m                [0m
+                    [90m([0m[33m  1.41 mb[0m[90m … [0m[33m  4.65 mb[0m[90m) [0m[33m  3.22 mb[0m [36m▃███[0m[33m█[0m[35m▇▆▆▄▄▃▃▁▂▂▁▂▁▁▁▁[0m
+
+ajv precompiled (baseline)   [1m[33m 20.89 ns[0m[1m/iter[0m [90m 21.49 ns[0m [36m ▆█ [0m[33m [0m[35m                [0m
+                      [90m([0m[36m19.35 ns[0m[90m … [0m[35m61.50 ns[0m[90m)[0m [90m 26.33 ns[0m [36m ███[0m[33m▂[0m[35m                [0m
+                    [90m([0m[33m  6.11  b[0m[90m … [0m[33m218.12  b[0m[90m) [0m[33m 56.17  b[0m [36m▄███[0m[33m█[0m[35m▅▄█▇▅▄▂▂▂▂▁▁▁▁▁▁[0m
+
+[1msummary[0m
+  [1m[36majv precompiled (baseline)[0m
+   [32m44.69[0mx faster than [1m[36mata (this)[0m
+   [32m72412.57[0mx faster than [1m[36majv compile + validate[0m
+
+• S1 TRUE COLD: fresh schema each iteration
+[90m------------------------------------------- -------------------------------[0m
+ata (this) fresh-schema      [1m[33m554.36 ns[0m[1m/iter[0m [90m448.62 ns[0m [36m█▂[0m[33m [0m[35m                  [0m
+                      [90m([0m[36m410.53 ns[0m[90m … [0m[35m2.05 µs[0m[90m)[0m [90m  1.69 µs[0m [36m██[0m[33m [0m[35m                  [0m
+                    [90m([0m[33m669.41  b[0m[90m … [0m[33m  1.46 kb[0m[90m) [0m[33m  1.21 kb[0m [36m██[0m[33m▁[0m[35m▁▁▁▁▁▁▁▁▁▁▁▁▁▁▂▁▂▂[0m
+
+ajv compile+validate fresh   [1m[33m  1.27 ms[0m[1m/iter[0m [90m  1.27 ms[0m [36m  ▃█ [0m[33m [0m[35m               [0m
+                        [90m([0m[36m1.15 ms[0m[90m … [0m[35m1.78 ms[0m[90m)[0m [90m  1.61 ms[0m [36m  ███[0m[33m [0m[35m               [0m
+                    [90m([0m[33m  1.31 mb[0m[90m … [0m[33m  3.92 mb[0m[90m) [0m[33m  2.87 mb[0m [36m▂▄███[0m[33m▇[0m[35m▆▃▃▃▂▂▂▃▂▂▂▂▂▁▁[0m
+
+[1msummary[0m
+  [1m[36mata (this) fresh-schema[0m
+   [32m2283.54[0mx faster than [1m[36majv compile+validate fresh[0m
+
+• S2 TRUE COLD: fresh schema each iteration
+[90m------------------------------------------- -------------------------------[0m
+ata (this) fresh-schema      [1m[33m823.05 ns[0m[1m/iter[0m [90m724.67 ns[0m [36m █ [0m[33m [0m[35m                 [0m
+                      [90m([0m[36m674.94 ns[0m[90m … [0m[35m1.74 µs[0m[90m)[0m [90m  1.71 µs[0m [36m █ [0m[33m [0m[35m                 [0m
+                    [90m([0m[33m116.22  b[0m[90m … [0m[33m  1.67 kb[0m[90m) [0m[33m  1.44 kb[0m [36m██▁[0m[33m▁[0m[35m▁▁▁▁▁▁▁▁▁▁▁▁▁▂▂▂▂[0m
+
+ajv compile+validate fresh   [1m[33m  1.43 ms[0m[1m/iter[0m [90m  1.43 ms[0m [36m   █ [0m[33m [0m[35m               [0m
+                        [90m([0m[36m1.30 ms[0m[90m … [0m[35m1.90 ms[0m[90m)[0m [90m  1.83 ms[0m [36m  ██▄[0m[33m [0m[35m               [0m
+                    [90m([0m[33m  1.78 mb[0m[90m … [0m[33m  4.08 mb[0m[90m) [0m[33m  3.19 mb[0m [36m▂▇███[0m[33m▇[0m[35m▅▃▂▃▂▂▃▃▃▂▁▂▁▂▁[0m
+
+[1msummary[0m
+  [1m[36mata (this) fresh-schema[0m
+   [32m1735.24[0mx faster than [1m[36majv compile+validate fresh[0m
