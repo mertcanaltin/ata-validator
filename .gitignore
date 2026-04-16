@@ -12,3 +12,5 @@ build_cmake/
 .DS_Store
 docs/superpowers/
 benchmark/profile_*.mjs
+
+.worktrees/
