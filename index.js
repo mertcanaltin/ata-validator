@@ -9,6 +9,8 @@ const {
   compileToJSCombined,
 } = require("./lib/js-compiler");
 const { normalizeDraft7 } = require("./lib/draft7");
+const { classify } = require("./lib/shape-classifier");
+const { buildTier0Plan, tier0Validate } = require("./lib/tier0");
 
 // Extract default values from a schema tree. Returns a function that applies
 // defaults to an object in-place (mutates), or null if no defaults exist.
@@ -413,6 +415,20 @@ class Validator {
       enumerable: false,
       configurable: false,
     });
+
+    // Tier 0 fast path: override isValidObject with a direct bound validator.
+    // All other methods (validate, validateJSON, etc.) stay on the lazy stubs above.
+    // Tier 0/1 are boolean-only; error paths continue through codegen.
+    const _tier = classify(schemaObj);
+    if (_tier.tier === 0) {
+      const _plan = buildTier0Plan(schemaObj);
+      this.isValidObject = (data) => tier0Validate(_plan, data);
+    }
+
+    // Populate identity cache so repeated `new Validator(sameSchema)` short-circuits.
+    if (!opts && typeof schema === "object" && schema !== null) {
+      _identityCache.set(schema, this);
+    }
   }
 
   _ensureCompiled() {
