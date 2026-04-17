@@ -102,7 +102,7 @@ Self-recursive named functions for $dynamicRef, compile-time cross-schema resolu
 
 ### JSON Schema Test Suite
 
-**95.3%** pass rate (1170/1227) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12). **95.3%** on [@exodus/schemasafe](https://github.com/ExodusMovement/schemasafe) test suite.
+**98.3%** pass rate (1170/1190) on official [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) (Draft 2020-12), excluding remote refs and vocabulary (intentionally unsupported). **95.3%** on [@exodus/schemasafe](https://github.com/ExodusMovement/schemasafe) test suite.
 
 ## When to use ata
 
@@ -135,7 +135,7 @@ Self-recursive named functions for $dynamicRef, compile-time cross-schema resolu
 - **Zero-copy paths**: Buffer and pre-padded input support - no unnecessary copies
 - **Defaults + coercion**: `default` values, `coerceTypes`, `removeAdditional` support
 - **C/C++ library**: Native API for non-Node.js environments
-- **96.9% spec compliant**: Draft 2020-12
+- **98.3% spec compliant**: Draft 2020-12
 
 ## Installation
 
