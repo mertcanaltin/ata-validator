@@ -23,6 +23,9 @@
     "./package.json": "./package.json"
   },
   "sideEffects": false,
+  "bin": {
+    "ata": "bin/ata.js"
+  },
   "browser": {
     "pkg-prebuilds": false
   },
