@@ -1,0 +1,19 @@
+<svg width="100%" viewBox="0 0 1610 910" xmlns="http://www.w3.org/2000/svg" role="img" style="font-family: &quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;">
+<title style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">ata-validator</title>
+<desc style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">Beyaz zemin üzerinde kod parantezleri içinde ata-validator başlığı</desc>
+
+<rect x="0" y="0" width="1600" height="900" fill="#FFFFFF" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+<!-- Üstte küçük status satırı -->
+<g font-family="'IBM Plex Mono', 'Inter', -apple-system, monospace" font-size="12" fill="#707070" letter-spacing="2" style="fill:rgb(112, 112, 112);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">
+  <text x="800" y="340" text-anchor="middle" style="fill:rgb(112, 112, 112);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">INPUT → VALIDATE → PASS</text>
+</g>
+
+<!-- Ana başlık: { ata-validator } -->
+<g font-family="'IBM Plex Mono', 'Inter', -apple-system, monospace" font-size="150" letter-spacing="-5" style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:150px;font-weight:400;text-anchor:start;dominant-baseline:auto">
+  <text x="800" y="505" text-anchor="middle" style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:150px;font-weight:400;text-anchor:middle;dominant-baseline:auto">
+    <tspan fill="#B0B0B0" font-weight="300" style="fill:rgb(176, 176, 176);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:150px;font-weight:300;text-anchor:middle;dominant-baseline:auto">{ </tspan><tspan fill="#0A0A0A" font-weight="600" style="fill:rgb(10, 10, 10);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:150px;font-weight:600;text-anchor:middle;dominant-baseline:auto">ata-validator</tspan><tspan fill="#B0B0B0" font-weight="300" style="fill:rgb(176, 176, 176);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;IBM Plex Mono&quot;, Inter, -apple-system, monospace;font-size:150px;font-weight:300;text-anchor:middle;dominant-baseline:auto"> }</tspan>
+  </text>
+</g>
+
+</svg>
