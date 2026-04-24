@@ -58,8 +58,8 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 |---|---|---|---|---|---|
 | **validate (valid)** | **9ns** | 38ns | 50ns | 334ns | 326ns |
 | **validate (invalid)** | **37ns** | 103ns | 4ns | 11.8μs | 842ns |
-| **compilation** | **453ns** | 1.24ms | 52μs | — | — |
-| **first validation** | **2.1μs** | 1.11ms | 54μs | — | — |
+| **compilation** | **453ns** | 1.24ms | 52μs | n/a | n/a |
+| **first validation** | **2.1μs** | 1.11ms | 54μs | n/a | n/a |
 
 > Different categories: ata/ajv/typebox are JSON Schema validators, zod/valibot are schema-builder DSLs. [Benchmark code](benchmark/bench_all_mitata.mjs)
 
@@ -223,7 +223,7 @@ const v = new Validator(schema, {
 
 ### Build-time compile (`ata compile`)
 
-The `ata` CLI turns a JSON Schema file into a self-contained JavaScript module. No runtime dependency on `ata-validator`, so only the generated validator ships to the browser — typical output is ~1 KB gzipped compared to ~27 KB for the full runtime.
+The `ata` CLI turns a JSON Schema file into a self-contained JavaScript module. No runtime dependency on `ata-validator`, so only the generated validator ships to the browser. Typical output is ~1 KB gzipped compared to ~27 KB for the full runtime.
 
 ```bash
 npx ata compile schemas/user.json -o src/generated/user.validator.mjs
