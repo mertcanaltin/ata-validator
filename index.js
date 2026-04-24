@@ -272,6 +272,7 @@ const _identityCache = new WeakMap();
 
 const SIMDJSON_PADDING = 64;
 const VALID_RESULT = Object.freeze({ valid: true, errors: Object.freeze([]) });
+const ABORT_EARLY_RESULT = Object.freeze({ valid: false, errors: Object.freeze([Object.freeze({ message: 'validation failed' })]) });
 
 // Above this size, simdjson On Demand (selective field access) beats JSON.parse
 // (which must materialize the full JS object tree). Buffer.from + NAPI ~2x faster.
@@ -561,7 +562,14 @@ class Validator {
         } catch {}
       }
 
-      if (hasDynRef && _isCodegen && jsFn) {
+      if (options.abortEarly && jsFn && !hasDynRef) {
+        // Abort-early fast path: skip detailed error collection on failure.
+        // Returns a shared frozen result, no per-call allocation, no errFn work.
+        const _fn = jsFn;
+        this.validate = preprocess
+          ? (data) => { preprocess(data); return _fn(data) ? VALID_RESULT : ABORT_EARLY_RESULT; }
+          : (data) => (_fn(data) ? VALID_RESULT : ABORT_EARLY_RESULT);
+      } else if (hasDynRef && _isCodegen && jsFn) {
         // $dynamicRef with JS codegen: direct path, no wrapper layers
         const _fn = jsFn, _efn = safeErrFn || errFn, _R = VALID_RESULT;
         this.validate = preprocess
