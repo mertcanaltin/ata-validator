@@ -42,6 +42,7 @@
     "test:browser": "node tests/test_browser.js",
     "test:ts": "node tests/test_ts_gen.js",
     "test:ts-corpus": "node tests/test_ts_corpus.js",
+    "test:ts-differential": "node tests/test_ts_differential.js",
     "bench": "node benchmark/bench_large.js",
     "fuzz": "node tests/fuzz_differential.js",
     "fuzz:long": "FUZZ_ITERATIONS=100000 node tests/fuzz_differential.js",
