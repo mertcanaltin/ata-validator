@@ -15,6 +15,7 @@
 | NestJS | validation pipe | [nestjs.md](./nestjs.md) |
 | SvelteKit | form action | [sveltekit.md](./sveltekit.md) |
 | Astro | API route | [astro.md](./astro.md) |
+| Effect | tagged error + Effect | [effect.md](./effect.md) |
 
 For Fastify, use the dedicated [`fastify-ata`](https://github.com/ata-core/fastify-ata) plugin. For Vite build-time compilation, use [`ata-vite`](https://github.com/ata-core/ata-vite).
 
