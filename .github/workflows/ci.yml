@@ -108,3 +108,38 @@ jobs:
 
       - name: Run JSON Schema Test Suite
         run: npm run test:suite
+
+  test-ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install RE2
+        run: sudo apt-get update && sudo apt-get install -y libre2-dev libabsl-dev
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build native addon
+        run: npm run build
+
+      - name: Run TS generator fixtures
+        run: npm run test:ts
+
+      - name: Run TS corpus (draft 2020-12)
+        run: npm run test:ts-corpus
+
+      - name: Run TS corpus (draft 7)
+        run: CORPUS_DRAFT=draft7 npm run test:ts-corpus
+
+      - name: Run TS differential (draft 2020-12)
+        run: npm run test:ts-differential
+
+      - name: Run TS differential (draft 7)
+        run: CORPUS_DRAFT=draft7 npm run test:ts-differential
