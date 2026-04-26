@@ -20,3 +20,8 @@ tests/ts_fixtures/**/validator.mjs
 tests/ts_fixtures/**/validator.d.mts
 tests/ts_fixtures/**/validator.d.cts
 tests/ts_fixtures/**/validator.cjs
+
+# perf scoreboard rig
+benchmark/.scoreboard/*.json
+!benchmark/.scoreboard/baseline.json
+traces/
