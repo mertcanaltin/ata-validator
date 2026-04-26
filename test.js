@@ -162,6 +162,27 @@ test("isValid: Uint8Array input", () => {
   assert(v.isValid(u8) === true, "should accept Uint8Array");
 });
 
+test("isValid: rejects parsed object", () => {
+  const v = new Validator({ type: "object", required: ["id"] });
+  let threw = false;
+  try { v.isValid({ id: 1 }); } catch (e) { threw = e instanceof TypeError && /Buffer/.test(e.message); }
+  assert(threw, "should throw TypeError pointing to Buffer/Uint8Array/string");
+});
+
+test("countValid: rejects non-buffer", () => {
+  const v = new Validator({ type: "number" });
+  let threw = false;
+  try { v.countValid({}); } catch (e) { threw = e instanceof TypeError; }
+  assert(threw, "should throw TypeError on plain object");
+});
+
+test("batchIsValid: rejects non-buffer element", () => {
+  const v = new Validator({ type: "object", required: ["id"] });
+  let threw = false;
+  try { v.batchIsValid([Buffer.from('{"id":1}'), { id: 2 }]); } catch (e) { threw = e instanceof TypeError; }
+  assert(threw, "should throw TypeError when an element isn't a Buffer/Uint8Array");
+});
+
 // --- V8 Fast API: countValid ---
 
 test("countValid: NDJSON buffer", () => {

@@ -693,19 +693,37 @@ class Validator {
         this.isValid = (buf) => {
           self._ensureNative();
           const slot = self._fastSlot;
-          self.isValid = (b) => { if (typeof b === 'string') b = Buffer.from(b); return native.rawFastValidate(slot, b); };
+          self.isValid = (b) => {
+            if (typeof b === 'string') b = Buffer.from(b);
+            else if (!(b instanceof Uint8Array)) throw new TypeError('isValid() requires a Buffer, Uint8Array, or string. For parsed objects, use isValidObject().');
+            return native.rawFastValidate(slot, b);
+          };
           return self.isValid(buf);
         };
         this.countValid = (ndjsonBuf) => {
           self._ensureNative();
           const slot = self._fastSlot;
-          self.countValid = (b) => { if (typeof b === 'string') b = Buffer.from(b); const r = native.rawNDJSONValidate(slot, b); let c = 0; for (let i = 0; i < r.length; i++) if (r[i]) c++; return c; };
+          self.countValid = (b) => {
+            if (typeof b === 'string') b = Buffer.from(b);
+            else if (!(b instanceof Uint8Array)) throw new TypeError('countValid() requires a Buffer, Uint8Array, or string');
+            const r = native.rawNDJSONValidate(slot, b);
+            let c = 0;
+            for (let i = 0; i < r.length; i++) if (r[i]) c++;
+            return c;
+          };
           return self.countValid(ndjsonBuf);
         };
         this.batchIsValid = (buffers) => {
           self._ensureNative();
           const slot = self._fastSlot;
-          self.batchIsValid = (bufs) => { let v = 0; for (const b of bufs) if (native.rawFastValidate(slot, b)) v++; return v; };
+          self.batchIsValid = (bufs) => {
+            let v = 0;
+            for (const b of bufs) {
+              if (!(b instanceof Uint8Array)) throw new TypeError('batchIsValid() requires Buffer or Uint8Array elements');
+              if (native.rawFastValidate(slot, b)) v++;
+            }
+            return v;
+          };
           return self.batchIsValid(buffers);
         };
       }
@@ -732,6 +750,7 @@ class Validator {
         const slot = this._fastSlot;
         this.isValid = (buf) => {
           if (typeof buf === 'string') buf = Buffer.from(buf);
+          else if (!(buf instanceof Uint8Array)) throw new TypeError('isValid() requires a Buffer, Uint8Array, or string. For parsed objects, use isValidObject().');
           return native.rawFastValidate(slot, buf);
         };
       }
@@ -739,6 +758,7 @@ class Validator {
         const slot = this._fastSlot;
         this.countValid = (ndjsonBuf) => {
           if (typeof ndjsonBuf === 'string') ndjsonBuf = Buffer.from(ndjsonBuf);
+          else if (!(ndjsonBuf instanceof Uint8Array)) throw new TypeError('countValid() requires a Buffer, Uint8Array, or string');
           const results = native.rawNDJSONValidate(slot, ndjsonBuf);
           let count = 0;
           for (let i = 0; i < results.length; i++) if (results[i]) count++;
@@ -750,6 +770,7 @@ class Validator {
         this.batchIsValid = (buffers) => {
           let valid = 0;
           for (const buf of buffers) {
+            if (!(buf instanceof Uint8Array)) throw new TypeError('batchIsValid() requires Buffer or Uint8Array elements');
             if (native.rawFastValidate(slot, buf)) valid++;
           }
           return valid;
@@ -1025,6 +1046,8 @@ ${exports}`;
   // Raw NAPI fast path for Buffer/Uint8Array
   isValid(input) {
     if (!native) throw new Error('Native addon required for isValid() — install build tools or use validate() instead');
+    if (typeof input === 'string') input = Buffer.from(input);
+    else if (!(input instanceof Uint8Array)) throw new TypeError('isValid() requires a Buffer, Uint8Array, or string. For parsed objects, use isValidObject().');
     this._ensureNative();
     return native.rawFastValidate(this._fastSlot, input);
   }
