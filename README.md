@@ -14,26 +14,26 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 35ns | 101ns | **ata 2.9x faster** |
-| **validate(obj)** invalid | 87ns | 183ns | **ata 2.1x faster** |
-| **isValidObject(obj)** | 23ns | 101ns | **ata 4.4x faster** |
-| **Schema compilation** | 8ns | 1.26ms | **ata 156,000x faster** |
-| **First validation** | 42ns | 1.27ms | **ata 30,000x faster** |
+| **validate(obj)** valid | 21ns | 108ns | **ata 5.1x faster** |
+| **validate(obj)** invalid | 86ns | 104ns | **ata 1.2x faster** |
+| **isValidObject(obj)** | 20ns | 109ns | **ata 5.4x faster** |
+| **Schema compilation** | 8ns | 1.33ms | **ata 159,000x faster** |
+| **First validation** | 28ns | 1.21ms | **ata 43,000x faster** |
 
 ### Complex Schema (patternProperties + dependentSchemas + propertyNames + additionalProperties)
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 23ns | 113ns | **ata 4.9x faster** |
-| **validate(obj)** invalid | 61ns | 186ns | **ata 3.0x faster** |
-| **isValidObject(obj)** | 22ns | 117ns | **ata 5.4x faster** |
+| **validate(obj)** valid | 19ns | 116ns | **ata 6.1x faster** |
+| **validate(obj)** invalid | 62ns | 195ns | **ata 3.1x faster** |
+| **isValidObject(obj)** | 18ns | 122ns | **ata 6.8x faster** |
 
 ### Cross-Schema `$ref` (multi-schema with `$id` registry)
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 18ns | 24ns | **ata 1.3x faster** |
-| **validate(obj)** invalid | 28ns | 53ns | **ata 1.9x faster** |
+| **validate(obj)** valid | 13ns | 25ns | **ata 2.0x faster** |
+| **validate(obj)** invalid | 28ns | 56ns | **ata 2.0x faster** |
 
 > Measured with [mitata](https://github.com/evanwashere/mitata) on Apple M4 Pro (process-isolated). [Benchmark code](benchmark/bench_complex_mitata.mjs)
 
@@ -41,14 +41,14 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **Tier 1** (properties only) valid | 3.2ns | 8.8ns | **ata 2.8x faster** |
-| **Tier 1** invalid | 3.6ns | 18.8ns | **ata 5.2x faster** |
-| **Tier 2** (allOf) valid | 3.2ns | 10.2ns | **ata 3.2x faster** |
-| **Tier 3** (anyOf) valid | 6.5ns | 21.9ns | **ata 3.4x faster** |
-| **Tier 3** invalid | 7.0ns | 41.2ns | **ata 5.9x faster** |
-| **unevaluatedItems** valid | 1.0ns | 5.2ns | **ata 5.3x faster** |
-| **unevaluatedItems** invalid | 0.94ns | 14.1ns | **ata 15.0x faster** |
-| **Compilation** | 8.6ns | 2.37ms | **ata 277,000x faster** |
+| **Tier 1** (properties only) valid | 3.3ns | 8.5ns | **ata 2.6x faster** |
+| **Tier 1** invalid | 3.6ns | 18.6ns | **ata 5.2x faster** |
+| **Tier 2** (allOf) valid | 3.3ns | 10.1ns | **ata 3.0x faster** |
+| **Tier 3** (anyOf) valid | 6.7ns | 22.9ns | **ata 3.4x faster** |
+| **Tier 3** invalid | 7.5ns | 41.8ns | **ata 5.6x faster** |
+| **unevaluatedItems** valid | 0.97ns | 5.4ns | **ata 5.6x faster** |
+| **unevaluatedItems** invalid | 0.99ns | 14.9ns | **ata 15.0x faster** |
+| **Compilation** | 8.8ns | 2.64ms | **ata 298,000x faster** |
 
 Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, dynamic schemas (anyOf/oneOf) use bitmask tracking with V8-inlined branch functions. [Benchmark code](benchmark/bench_unevaluated_mitata.mjs)
 
@@ -56,10 +56,10 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 
 | Scenario | ata | ajv | typebox | zod | valibot |
 |---|---|---|---|---|---|
-| **validate (valid)** | **9ns** | 38ns | 50ns | 334ns | 326ns |
-| **validate (invalid)** | **37ns** | 103ns | 4ns | 11.8μs | 842ns |
-| **compilation** | **453ns** | 1.24ms | 52μs | n/a | n/a |
-| **first validation** | **2.1μs** | 1.11ms | 54μs | n/a | n/a |
+| **validate (valid)** | **7ns** | 38ns | 50ns | 342ns | 337ns |
+| **validate (invalid)** | **38ns** | 102ns | 4ns | 11.9μs | 855ns |
+| **compilation** | **9ns** | 1.20ms | 53μs | n/a | n/a |
+| **first validation** | **16ns** | 1.16ms | 54μs | n/a | n/a |
 
 > Different categories: ata/ajv/typebox are JSON Schema validators, zod/valibot are schema-builder DSLs. [Benchmark code](benchmark/bench_all_mitata.mjs)
 
@@ -67,9 +67,9 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 
 | Size | ata | ajv | |
 |---|---|---|---|
-| 10 users (2KB) | 6.2M ops/sec | 2.5M ops/sec | **ata 2.5x faster** |
-| 100 users (20KB) | 658K ops/sec | 243K ops/sec | **ata 2.7x faster** |
-| 1,000 users (205KB) | 64K ops/sec | 23.5K ops/sec | **ata 2.7x faster** |
+| 10 users (2KB) | 6.0M ops/sec | 2.4M ops/sec | **ata 2.5x faster** |
+| 100 users (20KB) | 621K ops/sec | 229K ops/sec | **ata 2.7x faster** |
+| 1,000 users (205KB) | 63K ops/sec | 22.5K ops/sec | **ata 2.8x faster** |
 
 ### Real-World Scenarios
 
@@ -96,11 +96,11 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **$dynamicRef tree** valid | 23ns | 55ns | **ata 2.4x faster** |
-| **$dynamicRef tree** invalid | 68ns | 80ns | **ata 1.2x faster** |
+| **$dynamicRef tree** valid | 22ns | 54ns | **ata 2.4x faster** |
+| **$dynamicRef tree** invalid | 71ns | 77ns | **ata 1.1x faster** |
 | **$dynamicRef override** valid | 2.6ns | 187ns | **ata 71x faster** |
-| **$dynamicRef override** invalid | 49ns | 186ns | **ata 3.8x faster** |
-| **$anchor array** valid | 2.4ns | 3.1ns | **ata 1.3x faster** |
+| **$dynamicRef override** invalid | 50ns | 189ns | **ata 3.8x faster** |
+| **$anchor array** valid | 2.2ns | 3.2ns | **ata 1.4x faster** |
 
 Self-recursive named functions for $dynamicRef, compile-time cross-schema resolution, zero-wrapper hybrid path. [Benchmark code](benchmark/bench_dynamicref_vs_ajv.mjs)
 
@@ -110,7 +110,7 @@ Self-recursive named functions for $dynamicRef, compile-time cross-schema resolu
 
 ## When to use ata
 
-- **High-throughput `validate(obj)`** - 3.1x faster than ajv, 38x faster than zod
+- **High-throughput `validate(obj)`** - 5.1x faster than ajv, 47x faster than zod
 - **Complex schemas** - `patternProperties`, `dependentSchemas`, `propertyNames`, `unevaluatedProperties` all inline JS codegen
 - **Multi-schema projects** - cross-schema `$ref` with `$id` registry, `addSchema()` API
 - **Draft 7 migration** - auto-detects `$schema`, normalizes Draft 7 keywords transparently
