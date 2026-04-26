@@ -14,26 +14,26 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 22ns | 102ns | **ata 4.6x faster** |
-| **validate(obj)** invalid | 87ns | 182ns | **ata 2.1x faster** |
-| **isValidObject(obj)** | 21ns | 100ns | **ata 4.7x faster** |
-| **Schema compilation** | 453ns | 1.24ms | **ata 2,729x faster** |
-| **First validation** | 2.07μs | 1.11ms | **ata 534x faster** |
+| **validate(obj)** valid | 35ns | 101ns | **ata 2.9x faster** |
+| **validate(obj)** invalid | 87ns | 183ns | **ata 2.1x faster** |
+| **isValidObject(obj)** | 23ns | 101ns | **ata 4.4x faster** |
+| **Schema compilation** | 8ns | 1.26ms | **ata 156,000x faster** |
+| **First validation** | 42ns | 1.27ms | **ata 30,000x faster** |
 
 ### Complex Schema (patternProperties + dependentSchemas + propertyNames + additionalProperties)
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 17ns | 115ns | **ata 6.8x faster** |
-| **validate(obj)** invalid | 59ns | 194ns | **ata 3.3x faster** |
-| **isValidObject(obj)** | 19ns | 124ns | **ata 6.6x faster** |
+| **validate(obj)** valid | 23ns | 113ns | **ata 4.9x faster** |
+| **validate(obj)** invalid | 61ns | 186ns | **ata 3.0x faster** |
+| **isValidObject(obj)** | 22ns | 117ns | **ata 5.4x faster** |
 
 ### Cross-Schema `$ref` (multi-schema with `$id` registry)
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **validate(obj)** valid | 17ns | 25ns | **ata 1.5x faster** |
-| **validate(obj)** invalid | 34ns | 54ns | **ata 1.6x faster** |
+| **validate(obj)** valid | 18ns | 24ns | **ata 1.3x faster** |
+| **validate(obj)** invalid | 28ns | 53ns | **ata 1.9x faster** |
 
 > Measured with [mitata](https://github.com/evanwashere/mitata) on Apple M4 Pro (process-isolated). [Benchmark code](benchmark/bench_complex_mitata.mjs)
 
@@ -41,14 +41,14 @@ Ultra-fast JSON Schema validator powered by [simdjson](https://github.com/simdjs
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **Tier 1** (properties only) valid | 3.3ns | 8.7ns | **ata 2.6x faster** |
-| **Tier 1** invalid | 3.7ns | 19.1ns | **ata 5.2x faster** |
-| **Tier 2** (allOf) valid | 3.3ns | 9.9ns | **ata 3.0x faster** |
-| **Tier 3** (anyOf) valid | 6.7ns | 23.2ns | **ata 3.5x faster** |
-| **Tier 3** invalid | 7.1ns | 42.4ns | **ata 6.0x faster** |
-| **unevaluatedItems** valid | 1.0ns | 5.5ns | **ata 5.4x faster** |
-| **unevaluatedItems** invalid | 0.96ns | 14.2ns | **ata 14.8x faster** |
-| **Compilation** | 375ns | 2.59ms | **ata 6,904x faster** |
+| **Tier 1** (properties only) valid | 3.2ns | 8.8ns | **ata 2.8x faster** |
+| **Tier 1** invalid | 3.6ns | 18.8ns | **ata 5.2x faster** |
+| **Tier 2** (allOf) valid | 3.2ns | 10.2ns | **ata 3.2x faster** |
+| **Tier 3** (anyOf) valid | 6.5ns | 21.9ns | **ata 3.4x faster** |
+| **Tier 3** invalid | 7.0ns | 41.2ns | **ata 5.9x faster** |
+| **unevaluatedItems** valid | 1.0ns | 5.2ns | **ata 5.3x faster** |
+| **unevaluatedItems** invalid | 0.94ns | 14.1ns | **ata 15.0x faster** |
+| **Compilation** | 8.6ns | 2.37ms | **ata 277,000x faster** |
 
 Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, dynamic schemas (anyOf/oneOf) use bitmask tracking with V8-inlined branch functions. [Benchmark code](benchmark/bench_unevaluated_mitata.mjs)
 
@@ -96,11 +96,11 @@ Three-tier hybrid codegen: static schemas compile to zero-overhead key checks, d
 
 | Scenario | ata | ajv | |
 |---|---|---|---|
-| **$dynamicRef tree** valid | 22ns | 54ns | **ata 2.4x faster** |
-| **$dynamicRef tree** invalid | 70ns | 76ns | **ata 1.1x faster** |
-| **$dynamicRef override** valid | 2.6ns | 183ns | **ata 70x faster** |
-| **$dynamicRef override** invalid | 48ns | 185ns | **ata 3.8x faster** |
-| **$anchor array** valid | 2.3ns | 3.1ns | **ata 1.4x faster** |
+| **$dynamicRef tree** valid | 23ns | 55ns | **ata 2.4x faster** |
+| **$dynamicRef tree** invalid | 68ns | 80ns | **ata 1.2x faster** |
+| **$dynamicRef override** valid | 2.6ns | 187ns | **ata 71x faster** |
+| **$dynamicRef override** invalid | 49ns | 186ns | **ata 3.8x faster** |
+| **$anchor array** valid | 2.4ns | 3.1ns | **ata 1.3x faster** |
 
 Self-recursive named functions for $dynamicRef, compile-time cross-schema resolution, zero-wrapper hybrid path. [Benchmark code](benchmark/bench_dynamicref_vs_ajv.mjs)
 
