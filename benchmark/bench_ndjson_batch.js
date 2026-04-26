@@ -103,9 +103,12 @@ function benchAjvNoTryCatch(ndjsonStr, rounds) {
 function main() {
   const sizes = [100, 1000, 10000, 100000]
   const target = 5 * 1e9 // ~5 seconds per benchmark
+  const scoreboardMetrics = {}
 
-  console.log('NDJSON batch validation: ata countValid vs ajv loop')
-  console.log('='.repeat(64))
+  if (!process.env.SCOREBOARD) {
+    console.log('NDJSON batch validation: ata countValid vs ajv loop')
+    console.log('='.repeat(64))
+  }
 
   for (const n of sizes) {
     const ndjson = makeNdjson(n, 0.05)
@@ -114,9 +117,21 @@ function main() {
     // (conservative — will be fine even if ata is slow)
     const rounds = Math.max(5, Math.ceil(target / (n * 1000)))
 
-    console.log(`\n--- ${n.toLocaleString()} messages (${(buffer.length / 1024).toFixed(1)} KB), ${rounds} rounds ---`)
+    if (!process.env.SCOREBOARD) {
+      console.log(`\n--- ${n.toLocaleString()} messages (${(buffer.length / 1024).toFixed(1)} KB), ${rounds} rounds ---`)
+    }
 
     const ataR = benchAta(buffer, rounds)
+
+    if (process.env.SCOREBOARD) {
+      // Capture per-message ns for the 10k size (the scoreboard gate metric).
+      if (n === 10000) {
+        const nsPerMsg = ataR.ns / (n * rounds)
+        scoreboardMetrics['realworld.ndjson_10k'] = { ns: nsPerMsg }
+      }
+      continue
+    }
+
     const ajvR = benchAjv(ndjson, rounds)
     const ajvFastR = benchAjvNoTryCatch(ndjson, rounds)
 
@@ -129,6 +144,10 @@ function main() {
     console.log(`  ajv loop (pre-parsed, no try):   ${ajvFastMsgPerSec.toLocaleString(undefined, { maximumFractionDigits: 0 }).padStart(12)} msg/s   (valid: ${ajvFastR.validCount})`)
     console.log(`  ata vs ajv:                      ${(ataMsgPerSec / ajvMsgPerSec).toFixed(2)}x`)
     console.log(`  ata vs ajv (no parse overhead):  ${(ataMsgPerSec / ajvFastMsgPerSec).toFixed(2)}x`)
+  }
+
+  if (process.env.SCOREBOARD) {
+    console.log('SCOREBOARD_JSON:' + JSON.stringify({ file: 'bench_ndjson_batch.js', metrics: scoreboardMetrics }))
   }
 }
 

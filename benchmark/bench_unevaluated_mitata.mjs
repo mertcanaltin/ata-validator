@@ -5,6 +5,7 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 
 import { bench, group, run, summary, do_not_optimize } from "mitata";
+import { runBench } from "./_scoreboard-helpers.mjs";
 
 const { Validator } = require("../index.js");
 const Ajv = require("../benchmark/node_modules/ajv/dist/2020");
@@ -235,4 +236,4 @@ summary(() => {
   });
 });
 
-await run();
+await runBench('bench_unevaluated_mitata.mjs');

@@ -2,6 +2,7 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 
 import { bench, group, run, summary, do_not_optimize } from "mitata";
+import { runBench } from "./_scoreboard-helpers.mjs";
 
 const { Validator } = require("../index.js");
 const { Compile } = await import("typebox/compile");
@@ -48,4 +49,4 @@ summary(() => {
   });
 });
 
-await run();
+await runBench('bench_invalid_fair.mjs');
