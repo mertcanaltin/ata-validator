@@ -42,7 +42,7 @@ static bool is_hex(char c) {
   return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
-static bool fast_check_email(std::string_view s) {
+__attribute__((always_inline)) static inline bool fast_check_email(std::string_view s) {
   auto at = s.find('@');
   if (at == std::string_view::npos || at == 0 || at == s.size() - 1)
     return false;
@@ -144,7 +144,7 @@ static bool fast_check_hostname(std::string_view s) {
 }
 
 // Check format by pre-resolved numeric ID — no string comparisons.
-static bool check_format_by_id(std::string_view sv, uint8_t fid) {
+__attribute__((always_inline)) static inline bool check_format_by_id(std::string_view sv, uint8_t fid) {
   switch (fid) {
     case 0: return fast_check_email(sv);
     case 1: return fast_check_date(sv);
@@ -3056,6 +3056,14 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
   // turns the per-property dispatch into a single uint64 cmp.
   size_t next_idx = 0;
 
+  // Hoist loop-invariant pointers and sizes out of the per-property loop.
+  // Vector .data() / .size() can't always be const-folded across the
+  // body — explicit caching here is a small but reliable win.
+  const size_t n = op.entries.size();
+  const uint64_t* const hk = op.hot_key_first8.data();
+  const uint8_t*  const hl = op.hot_key_len_inline.data();
+  od_plan::prop_entry* const entries_ptr = op.entries.data();
+
 
   scan_skip_ws(p, end);
   if (p < end && *p == '}') {
@@ -3133,9 +3141,6 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
     // Cold path falls back to linear scan; key_first8 is masked by length
     // so a single uint64 cmp encodes both length and bytes.
     size_t found = SIZE_MAX;
-    const size_t n = op.entries.size();
-    const uint64_t* hk = op.hot_key_first8.data();
-    const uint8_t*  hl = op.hot_key_len_inline.data();
     if (next_idx < n && hk[next_idx] == key_first8) {
       found = next_idx;
     } else if (key_first8) {
@@ -3148,7 +3153,7 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
       // Slow fallback for long / non-ASCII keys.
       for (size_t i = 0; i < n; i++) {
         if (hl[i]) continue;
-        auto& e = op.entries[i];
+        auto& e = entries_ptr[i];
         if (klen == e.key.size() &&
             std::memcmp(k_start, e.key.data(), klen) == 0) { found = i; break; }
       }
@@ -3156,7 +3161,7 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
 
     bool matched = false;
     if (found != SIZE_MAX) {
-      auto& e = op.entries[found];
+      auto& e = entries_ptr[found];
       matched = true;
 #if 0
   // DEBUG: stub all dispatch — just skip value
