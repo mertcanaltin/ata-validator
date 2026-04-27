@@ -406,6 +406,8 @@ struct od_plan {
     INTEGER,      // value.get(int64)  + numeric range/multipleOf
     STRING,       // value.get(string) + length/pattern/format/enum
     BOOLEAN,      // value.get(bool)
+    OBJECT,       // value.get(object) + nested obj iteration (skips type detect)
+    ARRAY,        // value.get(array) + element iteration (skips type detect)
   };
   struct prop_entry {
     std::string key;
@@ -2610,10 +2612,21 @@ static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
     }
     // Compute fast_kind for each entry post-hoc — lets the obj iterator
     // skip the recursive od_exec_plan call (and its type().get + switch)
-    // for primitive properties.
+    // for primitive properties, and also skip type detection for nested
+    // objects / primitive arrays.
     for (auto& e : op->entries) {
       if (!e.sub) continue;
-      if (e.sub->object || e.sub->array) continue;
+      // Nested object: dispatch directly to value.get(obj) + iteration helper.
+      if (e.sub->object && !e.sub->array) {
+        e.fk = od_plan::fast_kind::OBJECT;
+        continue;
+      }
+      // Array: dispatch directly to value.get(arr) + element iteration helper.
+      if (e.sub->array && !e.sub->object) {
+        e.fk = od_plan::fast_kind::ARRAY;
+        continue;
+      }
+      if (e.sub->object || e.sub->array) continue;  // unusual: both, skip
       uint8_t m = e.sub->type_mask;
       uint8_t s_bit = json_type_bit(json_type::string);
       uint8_t i_bit = json_type_bit(json_type::integer);
@@ -2673,11 +2686,18 @@ static inline uint64_t utf8_length_fast(std::string_view s) {
 
 // Execute an od_plan against a simdjson On-Demand value.
 // Each value consumed exactly once. Uses simdjson types directly — no od_type() overhead.
-static bool od_exec_plan(const od_plan& plan, simdjson::ondemand::value value) {
-  // Use simdjson type directly — skip od_type() conversion + get_number_type()
+// `pre_type` is an optional caller-supplied type hint; when set, the value.type().get
+// simdjson call is skipped (saves ~3-5 ns per recursion). Used by fast_kind::OBJECT
+// / ARRAY dispatch where the type is already established at compile time.
+static bool od_exec_plan(const od_plan& plan, simdjson::ondemand::value value,
+                         std::optional<simdjson::ondemand::json_type> pre_type = std::nullopt) {
   using sjt = simdjson::ondemand::json_type;
   sjt st;
-  if (value.type().get(st) != SUCCESS) return false;
+  if (pre_type) {
+    st = *pre_type;
+  } else {
+    if (value.type().get(st) != SUCCESS) return false;
+  }
 
   // Type check using simdjson type directly
   if (plan.type_mask) {
@@ -2873,6 +2893,20 @@ static bool od_exec_plan(const od_plan& plan, simdjson::ondemand::value value) {
                 if (e.sub->enum_check) {
                   if (bv ? !e.sub->enum_check->has_true : !e.sub->enum_check->has_false) return false;
                 }
+                break;
+              }
+              case od_plan::fast_kind::OBJECT: {
+                simdjson::ondemand::value fv;
+                if (field.value().get(fv) != SUCCESS) return false;
+                if (!od_exec_plan(*e.sub, fv,
+                                  simdjson::ondemand::json_type::object)) return false;
+                break;
+              }
+              case od_plan::fast_kind::ARRAY: {
+                simdjson::ondemand::value fv;
+                if (field.value().get(fv) != SUCCESS) return false;
+                if (!od_exec_plan(*e.sub, fv,
+                                  simdjson::ondemand::json_type::array)) return false;
                 break;
               }
               case od_plan::fast_kind::OTHER:
