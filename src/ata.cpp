@@ -2753,14 +2753,16 @@ static bool od_exec_plan(const od_plan& plan, simdjson::ondemand::value value) {
     uint64_t prop_count = 0;
 
     for (auto field : obj) {
-      std::string_view key;
-      if (field.unescaped_key().get(key)) continue;
+      // Fast key compare: use raw_json_string against schema keys directly,
+      // skipping the unescape pass. Schema keys are assumed to have no
+      // unescaped quotes (true for any well-formed JSON Schema).
+      simdjson::ondemand::raw_json_string raw_key;
+      if (field.key().get(raw_key) != SUCCESS) continue;
       prop_count++;
 
-      // Single merged scan: required + property in one pass
       bool matched = false;
       for (auto& e : op.entries) {
-        if (key == e.key) {
+        if (raw_key.unsafe_is_equal(e.key)) {
           if (e.required_idx >= 0)
             required_found |= (1ULL << e.required_idx);
           if (e.sub) {
@@ -2770,6 +2772,30 @@ static bool od_exec_plan(const od_plan& plan, simdjson::ondemand::value value) {
           }
           matched = true;
           break;
+        }
+      }
+      // Safety net: if no match via raw byte compare, the JSON key may be
+      // escaped (e.g., "aname"). Fall back to a properly-unescaped
+      // compare so escaped keys still match the unescaped schema keys.
+      if (!matched) {
+        std::string_view raw_view = field.escaped_key();
+        if (raw_view.find('\\') != std::string_view::npos) {
+          std::string_view ukey;
+          if (field.unescaped_key().get(ukey) == SUCCESS) {
+            for (auto& e : op.entries) {
+              if (ukey == e.key) {
+                if (e.required_idx >= 0)
+                  required_found |= (1ULL << e.required_idx);
+                if (e.sub) {
+                  simdjson::ondemand::value fv;
+                  if (field.value().get(fv) != SUCCESS) return false;
+                  if (!od_exec_plan(*e.sub, fv)) return false;
+                }
+                matched = true;
+                break;
+              }
+            }
+          }
         }
       }
       if (!matched && op.no_additional) return false;
