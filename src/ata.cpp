@@ -344,6 +344,11 @@ struct schema_node {
 
   // boolean schema
   std::optional<bool> boolean_schema;
+
+  // Property declaration order — used by the byte scanner to dispatch
+  // properties in O(1) when JSON keys arrive in schema order. Unordered_map
+  // is hash-randomized so we capture insertion order separately.
+  std::vector<std::string> property_order;
 };
 
 // --- Codegen: flat bytecode plan ---
@@ -708,7 +713,11 @@ static schema_node_ptr compile_node(dom::element el,
   dom::element props_el;
   if (obj["properties"].get(props_el) == SUCCESS && props_el.is<dom::object>()) {
     dom::object props_obj; props_el.get(props_obj); for (auto [key, val] : props_obj) {
-      node->properties[std::string(key)] = compile_node(val, ctx);
+      std::string k(key);
+      if (node->properties.find(k) == node->properties.end()) {
+        node->property_order.push_back(k);
+      }
+      node->properties[k] = compile_node(val, ctx);
     }
   }
 
@@ -2607,28 +2616,41 @@ static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
         !node->additional_properties_bool.value()) {
       op->no_additional = true;
     }
-    // Build merged entries: each key appears once with required_idx + sub_plan
+    // Build merged entries in property declaration order. Real-world JSON
+    // payloads emit keys in this order >95% of the time (typed-object
+    // serialization, generated code, language-driven object initializers),
+    // so the byte scanner's speculative in-order dispatch hits with no
+    // linear-scan fallback. Required-only keys (declared in `required`
+    // but not in `properties`) are appended at the end.
     std::unordered_map<std::string, size_t> key_to_idx;
-    // Register required keys
-    for (size_t i = 0; i < node->required.size() && i < 64; i++) {
-      auto& rk = node->required[i];
-      if (key_to_idx.find(rk) == key_to_idx.end()) {
-        key_to_idx[rk] = op->entries.size();
-        op->entries.push_back({rk, static_cast<int>(i), nullptr});
-      } else {
-        op->entries[key_to_idx[rk]].required_idx = static_cast<int>(i);
-      }
+    // Pass 1: properties in declaration order
+    for (auto& key : node->property_order) {
+      auto pit = node->properties.find(key);
+      if (pit == node->properties.end()) continue;
+      auto sub = compile_od_plan(pit->second);
+      if (!sub || !sub->supported) { plan->supported = false; return plan; }
+      key_to_idx[key] = op->entries.size();
+      op->entries.push_back({key, -1, std::move(sub), od_plan::fast_kind::OTHER});
     }
-    // Register properties + compile sub-plans
+    // Pass 1b: any property not captured in property_order (defensive — e.g.
+    // schemas constructed via paths that bypass compile_node). Falls back
+    // to unordered_map iteration order so behavior remains correct.
     for (auto& [key, sub_node] : node->properties) {
+      if (key_to_idx.count(key)) continue;
       auto sub = compile_od_plan(sub_node);
       if (!sub || !sub->supported) { plan->supported = false; return plan; }
-      auto it = key_to_idx.find(key);
+      key_to_idx[key] = op->entries.size();
+      op->entries.push_back({key, -1, std::move(sub), od_plan::fast_kind::OTHER});
+    }
+    // Pass 2: assign required indices (and append required-only keys)
+    for (size_t i = 0; i < node->required.size() && i < 64; i++) {
+      auto& rk = node->required[i];
+      auto it = key_to_idx.find(rk);
       if (it != key_to_idx.end()) {
-        op->entries[it->second].sub = std::move(sub);
+        op->entries[it->second].required_idx = static_cast<int>(i);
       } else {
-        key_to_idx[key] = op->entries.size();
-        op->entries.push_back({key, -1, std::move(sub), od_plan::fast_kind::OTHER});
+        key_to_idx[rk] = op->entries.size();
+        op->entries.push_back({rk, static_cast<int>(i), nullptr});
       }
     }
     // Inline key cache for the byte scanner: keys ≤ 8 bytes can be matched
@@ -3028,6 +3050,13 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
   uint64_t required_found = 0;
   uint64_t prop_count = 0;
 
+  // Speculative in-order dispatch: most JSON payloads (typed-object
+  // serialization, framework request bodies, generated code) emit keys
+  // in schema declaration order, so checking entries[next_idx] first
+  // turns the per-property dispatch into a single uint64 cmp.
+  size_t next_idx = 0;
+
+
   scan_skip_ws(p, end);
   if (p < end && *p == '}') {
     p++;
@@ -3099,19 +3128,22 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
     if (p >= end || *p != ':') return scan_result::fail;
     p++;
 
-    // Scalar lookup. For our typical N≤8 schemas, branch-predicted linear
-    // scan beats NEON parallel compare — the NEON setup cost (~20 cycles)
-    // is more than the average linear scan (~16 cycles for N=8 with early
-    // exit). Empirically verified: NEON path measured 4-10 ns slower.
+    // Hot path: speculative in-order match. Single uint64 cmp resolves
+    // dispatch when JSON keys arrive in schema order (the common case).
+    // Cold path falls back to linear scan; key_first8 is masked by length
+    // so a single uint64 cmp encodes both length and bytes.
     size_t found = SIZE_MAX;
     const size_t n = op.entries.size();
     const uint64_t* hk = op.hot_key_first8.data();
     const uint8_t*  hl = op.hot_key_len_inline.data();
-    if (key_first8) {
+    if (next_idx < n && hk[next_idx] == key_first8) {
+      found = next_idx;
+    } else if (key_first8) {
       for (size_t i = 0; i < n; i++) {
         if (hk[i] == key_first8) { found = i; break; }
       }
     }
+    if (found != SIZE_MAX) next_idx = found + 1;
     if (found == SIZE_MAX) {
       // Slow fallback for long / non-ASCII keys.
       for (size_t i = 0; i < n; i++) {
@@ -3126,6 +3158,12 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
     if (found != SIZE_MAX) {
       auto& e = op.entries[found];
       matched = true;
+#if 0
+  // DEBUG: stub all dispatch — just skip value
+  (void)required_found; (void)e;
+  // skip whitespace + value (very rough — find next , or })
+  while (p < end && *p != ',' && *p != '}') p++;
+#else
       {
         if (e.required_idx >= 0)
           required_found |= (1ULL << e.required_idx);
@@ -3211,6 +3249,7 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
           }
         }
       }
+#endif
     }
     if (!matched) {
       if (op.no_additional) return scan_result::fail;
