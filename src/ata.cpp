@@ -2622,6 +2622,12 @@ static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
   if (!node->properties.empty() || !node->required.empty() ||
       node->additional_properties_bool.has_value() ||
       node->min_properties.has_value() || node->max_properties.has_value()) {
+    // The required-tracking mask is a single uint64. Beyond 64 required
+    // fields it would saturate to ~0, silently widening "all required
+    // present" — a correctness gap on this path. Send these schemas to
+    // the DOM tree walker instead, which iterates required[] directly
+    // and has no such limit.
+    if (node->required.size() > 64) { plan->supported = false; return plan; }
     auto op = std::make_shared<od_plan::obj_plan>();
     op->required_count = node->required.size();
     op->min_props = node->min_properties;
@@ -2769,35 +2775,6 @@ enum class scan_result : uint8_t { ok, fail, fallback };
 
 static inline uint64_t utf8_length_fast(std::string_view s);
 
-#if defined(__aarch64__)
-#include <arm_neon.h>
-#define ATA_HAS_NEON 1
-#endif
-
-#if ATA_HAS_NEON
-// NEON: find first '"' or '\\' or byte < 0x20 in a 16-byte chunk loaded
-// from p. Updates has_high if any byte has its top bit set. Returns byte
-// index 0-15, or -1 if none.
-//
-// Movemask via vshrn_n_u16: each input u16 contributes 4 bits to the
-// output u8, packing 16 byte-mask bits into a single 64-bit value.
-static inline int neon_string_term_pos(const char* p, bool& has_high) {
-  uint8x16_t v  = vld1q_u8(reinterpret_cast<const uint8_t*>(p));
-  uint8x16_t q  = vceqq_u8(v, vdupq_n_u8('"'));
-  uint8x16_t bs = vceqq_u8(v, vdupq_n_u8('\\'));
-  uint8x16_t lt = vcltq_u8(v, vdupq_n_u8(0x20));
-  uint8x16_t hi = vandq_u8(v, vdupq_n_u8(0x80));
-
-  if (vmaxvq_u8(hi)) has_high = true;
-
-  uint8x16_t any = vorrq_u8(vorrq_u8(q, bs), lt);
-  uint8x8_t sn = vshrn_n_u16(vreinterpretq_u16_u8(any), 4);
-  uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(sn), 0);
-  if (mask == 0) return -1;
-  return (int)(__builtin_ctzll(mask) >> 2);
-}
-#endif
-
 // SWAR: find first '"' or '\\' or byte < 0x20 in 8-byte chunk.
 // Updates has_high if any byte has its top bit set.
 // Returns byte index 0-7 of first match, or -1 if none.
@@ -2862,6 +2839,9 @@ static bool fast_scan_eligible_recursive(const od_plan& plan) {
   }
 
   if (plan.object) {
+    // See compute_fast_scan_eligible; the required-mask saturates to ~0
+    // beyond 64 entries, so we route those through the existing path.
+    if (plan.object->required_count > 64) return false;
     for (auto& e : plan.object->entries) {
       if (e.sub && !fast_scan_eligible_recursive(*e.sub)) return false;
     }
@@ -2875,8 +2855,16 @@ static bool fast_scan_eligible_recursive(const od_plan& plan) {
 // Top-level eligibility entry. Restricts to schemas whose root validates an
 // object — array roots are uncommon in HTTP body validation and not worth
 // the v1 surface area.
+//
+// Also rejects schemas where the root object plan declares more than 64
+// required keys. The required-mask is a single uint64 saturated to ~0 in
+// that case, which silently widens "all required present" — a behavior we
+// don't want to risk inheriting on the fast path. Such schemas fall through
+// to the existing on-demand path (which has its own well-tested handling
+// of these edge cases).
 static bool compute_fast_scan_eligible(const od_plan& plan) {
   if (!plan.supported || !plan.object) return false;
+  if (plan.object->required_count > 64) return false;
   return fast_scan_eligible_recursive(plan);
 }
 
@@ -3154,7 +3142,9 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
         key_first8 = v & key_len_masks[klen];
         p += klen;
       } else {
-        // Slow: key longer than 8 bytes (rare). Continue scanning chunks.
+        // Slow: terminator not in the first 8 bytes. Either the key is
+        // exactly 8 bytes (closing quote sits in the next chunk) or it's
+        // longer. Continue scanning chunks.
         p += 8;
         while (p < end) {
           uint64_t v2;
@@ -3173,7 +3163,13 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
         }
         if (p >= end) return scan_result::fail;
         if (key_has_high) return scan_result::fallback;
-        klen = (size_t)(p - k_start);  // > 8, no key_first8 fast path
+        klen = (size_t)(p - k_start);
+        // For exactly-8-byte keys the original `v` already holds the full
+        // key bytes (no terminator was hit in the first chunk). Promote
+        // them into the inline-cache hash so 8-char keys still take the
+        // fast dispatch path instead of falling all the way through to
+        // the memcmp loop.
+        if (klen == 8) key_first8 = v;
       }
     }
     p++;
@@ -3827,12 +3823,17 @@ validation_result validate(std::string_view schema_json,
 }
 
 
+// Minimum input size for the on-demand and byte-scanner paths. Below this
+// simdjson on-demand can't fully validate small malformed docs, and the
+// scanner has diminishing returns vs the DOM path's setup cost.
+static constexpr size_t MIN_OD_LENGTH = 32;
+
 bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t length) {
   if (!schema.impl || !schema.impl->root) return false;
 
   // Schema-driven byte scanner: bypass simdjson for eligible schemas.
   // Saves the ~40 ns simdjson on-demand floor on small documents.
-  if (schema.impl->od && schema.impl->od->fast_scan_eligible && length >= 32) {
+  if (schema.impl->od && schema.impl->od->fast_scan_eligible && length >= MIN_OD_LENGTH) {
     scan_result r = fast_scan_root(*schema.impl->od, data, length);
     if (r == scan_result::ok) return true;
     if (r == scan_result::fail) return false;
@@ -3843,8 +3844,7 @@ bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t lengt
   auto psv = get_free_padded_view(data, length, fallback);
 
   // On-Demand fast path: skip DOM parse entirely
-  // Minimum 32 bytes — On-Demand doesn't fully validate small malformed docs
-  if (schema.impl->od && schema.impl->od->supported && length >= 32) {
+  if (schema.impl->od && schema.impl->od->supported && length >= MIN_OD_LENGTH) {
     auto od_result = tl_od_parser().iterate(psv);
     if (!od_result.error()) {
       simdjson::ondemand::value root_val;

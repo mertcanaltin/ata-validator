@@ -121,6 +121,32 @@ console.log('Scanner regression tests')
   )
 }
 
+// --- >64 required fields: scanner must opt out --------------------------
+// The required-mask is a single uint64 saturated to ~0 once required_count
+// exceeds 64. The scanner's eligibility gate routes these schemas through
+// the on-demand path so saturation can't silently widen "all required
+// present".
+{
+  const props = {}
+  const required = []
+  for (let i = 0; i < 70; i++) {
+    props['p' + i] = { type: 'integer' }
+    required.push('p' + i)
+  }
+  const schema = { type: 'object', properties: props, required }
+  const v = new Validator(schema)
+
+  // All 70 required fields present
+  const allPresent = {}
+  for (let i = 0; i < 70; i++) allPresent['p' + i] = i
+  check('70 required fields, all present', v.isValid(asBuffer(allPresent)), true)
+
+  // Drop one required field; must fail
+  const missing = { ...allPresent }
+  delete missing.p65
+  check('70 required fields, one beyond bit-63 missing', v.isValid(asBuffer(missing)), false)
+}
+
 // --- Mixed short + long key entries --------------------------------------
 {
   const schema = {
