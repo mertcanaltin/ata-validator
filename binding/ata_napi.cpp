@@ -1203,8 +1203,15 @@ static napi_value RawFastValidate(napi_env env, napi_callback_info info) {
         }
       }
     } else {
-      // String — must copy (can't pre-pad strings)
-      size_t len;
+      napi_valuetype vtype;
+      napi_typeof(env, args[1], &vtype);
+      if (vtype != napi_string) {
+        napi_throw_type_error(env, nullptr,
+          "rawFastValidate() requires a Buffer, TypedArray, or string. For parsed objects, use validate() or isValidObject().");
+        return nullptr;
+      }
+      // String, must copy (can't pre-pad strings)
+      size_t len = 0;
       napi_get_value_string_utf8(env, args[1], nullptr, 0, &len);
       if (len <= 4096) {
         char buf[4097];
@@ -1267,7 +1274,14 @@ static napi_value RawBatchValidate(napi_env env, napi_callback_info info) {
           valid = ata::validate(g_fast_schemas[slot],
                     std::string_view(static_cast<const char*>(data), length)).valid;
       } else {
-        size_t len;
+        napi_valuetype vtype;
+        napi_typeof(env, item, &vtype);
+        if (vtype != napi_string) {
+          napi_throw_type_error(env, nullptr,
+            "rawNDJSONValidate() batch elements must be Buffer, TypedArray, or string");
+          return nullptr;
+        }
+        size_t len = 0;
         napi_get_value_string_utf8(env, item, nullptr, 0, &len);
         std::string buf(len, '\0');
         napi_get_value_string_utf8(env, item, buf.data(), len + 1, &len);
