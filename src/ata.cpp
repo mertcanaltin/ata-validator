@@ -2670,6 +2670,14 @@ static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
     // Inline key cache for the byte scanner: keys ≤ 8 bytes can be matched
     // by a uint64_t compare instead of memcmp. Mirror the cache into SoA
     // arrays for cache-friendly linear lookup.
+    //
+    // Sentinel for long / non-ASCII entries: 0xFFFFFFFFFFFFFFFF. Real JSON
+    // keys produce values whose every byte is < 0x80 (high bits zeroed
+    // because the scanner bails on high-bit bytes via key_has_high), so
+    // the sentinel can never equal a JSON-derived key_first8. This lets
+    // the speculative dispatch loop run a single uint64 compare with no
+    // "is this entry inline-cached?" guard.
+    constexpr uint64_t HOT_KEY_SENTINEL = 0xFFFFFFFFFFFFFFFFULL;
     op->hot_key_first8.reserve(op->entries.size());
     op->hot_key_len_inline.reserve(op->entries.size());
     for (auto& e : op->entries) {
@@ -2685,7 +2693,8 @@ static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
           e.key_len_inline = (uint8_t)e.key.size();
         }
       }
-      op->hot_key_first8.push_back(e.key_first8);
+      uint64_t hot = e.key_len_inline ? e.key_first8 : HOT_KEY_SENTINEL;
+      op->hot_key_first8.push_back(hot);
       op->hot_key_len_inline.push_back(e.key_len_inline);
     }
 
@@ -2821,14 +2830,35 @@ static inline int swar_string_term_pos(uint64_t v, bool& has_high) {
 static bool fast_scan_eligible_recursive(const od_plan& plan) {
   if (!plan.supported) return false;
 
-  // Reject schemas that constrain only "number" without "integer" — the
-  // scanner doesn't parse floating-point. Mixed (integer|number, i.e. any
-  // schema that accepts integers) is fine: scanner consumes the integer
-  // path and falls back if it encounters a decimal/exponent at runtime.
   if (plan.type_mask) {
+    uint8_t s_bit = json_type_bit(json_type::string);
     uint8_t i_bit = json_type_bit(json_type::integer);
     uint8_t n_bit = json_type_bit(json_type::number);
+    uint8_t b_bit = json_type_bit(json_type::boolean);
+    uint8_t nl_bit = json_type_bit(json_type::null_value);
+    uint8_t o_bit = json_type_bit(json_type::object);
+    uint8_t a_bit = json_type_bit(json_type::array);
+
+    // Reject schemas that constrain only "number" without "integer" — the
+    // scanner doesn't parse floating-point. Mixed (integer|number, i.e. any
+    // schema that accepts integers) is fine: scanner consumes the integer
+    // path and falls back if it encounters a decimal/exponent at runtime.
     if ((plan.type_mask & n_bit) && !(plan.type_mask & i_bit)) return false;
+
+    // Reject schemas where type_mask contradicts the plan's structure.
+    // A schema like {"type":"string","properties":{"x":...}} sets both
+    // type_mask=string and plan.object; the scanner would happily walk the
+    // object structure and miss the type mismatch. The on-demand path
+    // catches this via its value.type() check, so we send these through
+    // it instead of running the scanner blind.
+    if (plan.object && !(plan.type_mask & o_bit)) return false;
+    if (plan.array  && !(plan.type_mask & a_bit)) return false;
+
+    // Type mask must permit at least one of the JSON token classes the
+    // scanner emits. (Any combination of the seven JSON types is fine —
+    // we just want to make sure type_mask isn't pathologically empty.)
+    uint8_t any = s_bit | i_bit | n_bit | b_bit | nl_bit | o_bit | a_bit;
+    if ((plan.type_mask & any) == 0) return false;
   }
 
   if (plan.object) {
@@ -3156,8 +3186,11 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
 
     // Hot path: speculative in-order match. Single uint64 cmp resolves
     // dispatch when JSON keys arrive in schema order (the common case).
-    // Cold path falls back to linear scan; key_first8 is masked by length
-    // so a single uint64 cmp encodes both length and bytes.
+    // Long / non-ASCII entries hold HOT_KEY_SENTINEL, a value JSON keys
+    // can never produce, so the comparison is always safe to run without
+    // a separate "is this entry inline-cached?" guard. Long JSON keys
+    // (key_first8 == 0) won't match either branch and fall through to the
+    // memcmp slow path below.
     size_t found = SIZE_MAX;
     if (next_idx < n && hk[next_idx] == key_first8) {
       found = next_idx;

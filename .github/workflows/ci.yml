@@ -69,6 +69,9 @@ jobs:
       - name: Run Standard Schema tests
         run: npm run test:standard-schema
 
+      - name: Run scanner regression tests
+        run: npm run test:scanner
+
   test-cpp:
     runs-on: ubuntu-latest
     steps:
