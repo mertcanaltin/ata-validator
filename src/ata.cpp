@@ -398,10 +398,20 @@ struct od_plan {
   uint8_t format_id = 255;            // 255 = no format check
 
   // Object — single iterate with merged required+property lookup
+  // fast_kind allows the obj iterator to skip the recursive od_exec_plan call
+  // (and its inner type().get() + switch) for primitive sub-plans, dispatching
+  // straight to inline constraint code.
+  enum class fast_kind : uint8_t {
+    OTHER = 0,    // recurse via od_exec_plan
+    INTEGER,      // value.get(int64)  + numeric range/multipleOf
+    STRING,       // value.get(string) + length/pattern/format/enum
+    BOOLEAN,      // value.get(bool)
+  };
   struct prop_entry {
     std::string key;
     int required_idx = -1;            // bit index for required tracking, or -1
     std::shared_ptr<od_plan> sub;     // property sub-plan, or nullptr
+    fast_kind fk = fast_kind::OTHER;  // inline dispatch hint, set at compile time
   };
   struct obj_plan {
     std::vector<prop_entry> entries;  // merged required + properties — single scan
@@ -2595,7 +2605,35 @@ static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
         op->entries[it->second].sub = std::move(sub);
       } else {
         key_to_idx[key] = op->entries.size();
-        op->entries.push_back({key, -1, std::move(sub)});
+        op->entries.push_back({key, -1, std::move(sub), od_plan::fast_kind::OTHER});
+      }
+    }
+    // Compute fast_kind for each entry post-hoc — lets the obj iterator
+    // skip the recursive od_exec_plan call (and its type().get + switch)
+    // for primitive properties.
+    for (auto& e : op->entries) {
+      if (!e.sub) continue;
+      if (e.sub->object || e.sub->array) continue;
+      uint8_t m = e.sub->type_mask;
+      uint8_t s_bit = json_type_bit(json_type::string);
+      uint8_t i_bit = json_type_bit(json_type::integer);
+      uint8_t n_bit = json_type_bit(json_type::number);
+      uint8_t b_bit = json_type_bit(json_type::boolean);
+      if (m == s_bit) e.fk = od_plan::fast_kind::STRING;
+      else if (m == i_bit || m == (i_bit | n_bit)) e.fk = od_plan::fast_kind::INTEGER;
+      else if (m == b_bit) e.fk = od_plan::fast_kind::BOOLEAN;
+      else if (m == 0 && e.sub->enum_check) {
+        // Untyped enum: infer from enum value shapes
+        auto& ec = *e.sub->enum_check;
+        bool only_str = !ec.strings.empty() && ec.integers.empty() && ec.doubles.empty()
+                        && !ec.has_null && !ec.has_true && !ec.has_false;
+        bool only_int = ec.strings.empty() && !ec.integers.empty() && ec.doubles.empty()
+                        && !ec.has_null && !ec.has_true && !ec.has_false;
+        bool only_bool = ec.strings.empty() && ec.integers.empty() && ec.doubles.empty()
+                         && !ec.has_null && (ec.has_true || ec.has_false);
+        if (only_str) e.fk = od_plan::fast_kind::STRING;
+        else if (only_int) e.fk = od_plan::fast_kind::INTEGER;
+        else if (only_bool) e.fk = od_plan::fast_kind::BOOLEAN;
       }
     }
     plan->object = std::move(op);
@@ -2766,9 +2804,84 @@ static bool od_exec_plan(const od_plan& plan, simdjson::ondemand::value value) {
           if (e.required_idx >= 0)
             required_found |= (1ULL << e.required_idx);
           if (e.sub) {
-            simdjson::ondemand::value fv;
-            if (field.value().get(fv) != SUCCESS) return false;
-            if (!od_exec_plan(*e.sub, fv)) return false;
+            // Fast dispatch: skip recursive od_exec_plan + type().get + switch
+            // for primitive sub-plans. Mirrors the constraint code in od_exec_plan.
+            switch (e.fk) {
+              case od_plan::fast_kind::INTEGER: {
+                int64_t iv;
+                if (field.value().get(iv) != SUCCESS) return false;
+                auto& sub = *e.sub;
+                uint8_t f = sub.num_flags;
+                double v = static_cast<double>(iv);
+                if ((f & od_plan::HAS_MIN) && v < sub.num_min) return false;
+                if ((f & od_plan::HAS_MAX) && v > sub.num_max) return false;
+                if ((f & od_plan::HAS_EX_MIN) && v <= sub.num_ex_min) return false;
+                if ((f & od_plan::HAS_EX_MAX) && v >= sub.num_ex_max) return false;
+                if (f & od_plan::HAS_MUL) {
+                  double r = std::fmod(v, sub.num_mul);
+                  if (std::abs(r) > 1e-8 && std::abs(r - sub.num_mul) > 1e-8) return false;
+                }
+                if (sub.enum_check) {
+                  bool em = false;
+                  for (auto i2 : sub.enum_check->integers) if (i2 == iv) { em = true; break; }
+                  if (!em) for (auto d : sub.enum_check->doubles) if (d == v) { em = true; break; }
+                  if (!em) return false;
+                }
+                break;
+              }
+              case od_plan::fast_kind::STRING: {
+                std::string_view sv;
+                if (field.value().get(sv) != SUCCESS) return false;
+                auto& sub = *e.sub;
+                if (sub.min_length || sub.max_length) {
+                  uint64_t len = utf8_length_fast(sv);
+                  if (sub.min_length && len < *sub.min_length) return false;
+                  if (sub.max_length && len > *sub.max_length) return false;
+                }
+                if (sub.digit_pattern) {
+                  auto& dp = *sub.digit_pattern;
+                  if (sv.size() < dp.min_len || sv.size() > dp.max_len) return false;
+                  const uint8_t* sp = reinterpret_cast<const uint8_t*>(sv.data());
+                  for (size_t i = 0, n = sv.size(); i < n; i++) {
+                    if (sp[i] < '0' || sp[i] > '9') return false;
+                  }
+                }
+#ifndef ATA_NO_RE2
+                else if (sub.pattern) {
+                  if (!re2::RE2::PartialMatch(re2::StringPiece(sv.data(), sv.size()), *sub.pattern))
+                    return false;
+                }
+#endif
+                if (sub.format_id != 255) {
+                  if (!check_format_by_id(sv, sub.format_id)) return false;
+                }
+                if (sub.enum_check) {
+                  bool em = false;
+                  for (auto& s : sub.enum_check->strings) {
+                    if (sv.size() == s.size() && std::memcmp(sv.data(), s.data(), s.size()) == 0) {
+                      em = true;
+                      break;
+                    }
+                  }
+                  if (!em) return false;
+                }
+                break;
+              }
+              case od_plan::fast_kind::BOOLEAN: {
+                bool bv;
+                if (field.value().get(bv) != SUCCESS) return false;
+                if (e.sub->enum_check) {
+                  if (bv ? !e.sub->enum_check->has_true : !e.sub->enum_check->has_false) return false;
+                }
+                break;
+              }
+              case od_plan::fast_kind::OTHER:
+              default: {
+                simdjson::ondemand::value fv;
+                if (field.value().get(fv) != SUCCESS) return false;
+                if (!od_exec_plan(*e.sub, fv)) return false;
+              }
+            }
           }
           matched = true;
           break;
