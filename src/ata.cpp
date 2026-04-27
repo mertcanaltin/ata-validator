@@ -3074,10 +3074,7 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
   }
 
   for (;;) {
-    // Dense path: most properties begin with '"' immediately (no ws). Only
-    // call into skip_ws when the next byte is whitespace (≤ 0x20).
-    if (p >= end) return scan_result::fail;
-    if ((uint8_t)*p <= 0x20) scan_skip_ws(p, end);
+    scan_skip_ws(p, end);
     if (p >= end || *p != '"') return scan_result::fail;
     p++;
 
@@ -3135,8 +3132,7 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
     p++;
     prop_count++;
 
-    if (p >= end) return scan_result::fail;
-    if ((uint8_t)*p <= 0x20) scan_skip_ws(p, end);
+    scan_skip_ws(p, end);
     if (p >= end || *p != ':') return scan_result::fail;
     p++;
 
@@ -3267,23 +3263,10 @@ static scan_result fast_scan_object(const od_plan& plan, const char*& p, const c
       return scan_result::fallback;
     }
 
-    // Combined skip_ws + structural char check — for dense JSON the byte
-    // is already ',' or '}' so we exit in one load + two compares. Only
-    // pay skip_ws's cost when whitespace is actually present.
+    scan_skip_ws(p, end);
     if (p >= end) return scan_result::fail;
-    {
-      uint8_t c = (uint8_t)*p;
-      if (c == ',') { p++; continue; }
-      if (c == '}') { p++; break; }
-      if (c <= 0x20) {
-        scan_skip_ws(p, end);
-        if (p < end) {
-          c = (uint8_t)*p;
-          if (c == ',') { p++; continue; }
-          if (c == '}') { p++; break; }
-        }
-      }
-    }
+    if (*p == ',') { p++; continue; }
+    if (*p == '}') { p++; break; }
     return scan_result::fail;
   }
 
@@ -3312,6 +3295,7 @@ static scan_result fast_scan_array(const od_plan& plan, const char*& p, const ch
       scan_result r = fast_scan_value(*plan.array->items, p, end);
       if (r != scan_result::ok) return r;
     } else {
+      // No item schema: would need a generic skipper. Defer to on-demand.
       return scan_result::fallback;
     }
     count++;
