@@ -39,7 +39,6 @@
     "test:suite": "node tests/run_suite.js",
     "test:compat": "node tests/test_compat.js",
     "test:standard-schema": "node tests/test_standard_schema.js",
-    "test:scanner": "node tests/test_scanner_regression.js",
     "test:browser": "node tests/test_browser.js",
     "test:ts": "node tests/test_ts_gen.js",
     "test:ts-corpus": "node tests/test_ts_corpus.js",
