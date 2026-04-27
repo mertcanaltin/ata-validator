@@ -414,9 +414,24 @@ struct od_plan {
     int required_idx = -1;            // bit index for required tracking, or -1
     std::shared_ptr<od_plan> sub;     // property sub-plan, or nullptr
     fast_kind fk = fast_kind::OTHER;  // inline dispatch hint, set at compile time
+
+    // Inline key cache for the byte scanner: keys ≤ 8 bytes can be matched
+    // with a single uint64_t equality test instead of memcmp. Set by the
+    // post-processing pass in compile_od_plan; key_len_inline == 0 means
+    // the key is too long (or contains non-ASCII) and the scanner must
+    // fall through to memcmp.
+    uint64_t key_first8 = 0;
+    uint8_t key_len_inline = 0;
   };
   struct obj_plan {
     std::vector<prop_entry> entries;  // merged required + properties — single scan
+    // SoA hot lookup arrays — parallel to entries[]. The byte scanner walks
+    // these instead of touching prop_entry directly so the linear key scan
+    // hits one or two cache lines instead of one per entry.
+    // hot_key_len_inline[i] == 0 means entries[i].key is the source of truth
+    // (long key or non-ASCII) — compare via memcmp in that case.
+    std::vector<uint64_t> hot_key_first8;
+    std::vector<uint8_t>  hot_key_len_inline;
     size_t required_count = 0;
     bool no_additional = false;
     std::optional<uint64_t> min_props, max_props;
@@ -443,6 +458,11 @@ struct od_plan {
 
   // If false, schema uses unsupported features — must fall back to DOM path.
   bool supported = true;
+
+  // True when this plan and every reachable sub-plan can be validated by the
+  // schema-driven byte scanner (fast_scan_*) — bypassing simdjson entirely.
+  // Computed in a single post-compile pass; checked once at runtime.
+  bool fast_scan_eligible = false;
 };
 
 using od_plan_ptr = std::shared_ptr<od_plan>;
@@ -2610,6 +2630,28 @@ static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
         op->entries.push_back({key, -1, std::move(sub), od_plan::fast_kind::OTHER});
       }
     }
+    // Inline key cache for the byte scanner: keys ≤ 8 bytes can be matched
+    // by a uint64_t compare instead of memcmp. Mirror the cache into SoA
+    // arrays for cache-friendly linear lookup.
+    op->hot_key_first8.reserve(op->entries.size());
+    op->hot_key_len_inline.reserve(op->entries.size());
+    for (auto& e : op->entries) {
+      if (e.key.size() <= 8 && !e.key.empty()) {
+        bool ascii = true;
+        for (char c : e.key) {
+          if ((uint8_t)c >= 0x80) { ascii = false; break; }
+        }
+        if (ascii) {
+          uint64_t v = 0;
+          std::memcpy(&v, e.key.data(), e.key.size());
+          e.key_first8 = v;
+          e.key_len_inline = (uint8_t)e.key.size();
+        }
+      }
+      op->hot_key_first8.push_back(e.key_first8);
+      op->hot_key_len_inline.push_back(e.key_len_inline);
+    }
+
     // Compute fast_kind for each entry post-hoc — lets the obj iterator
     // skip the recursive od_exec_plan call (and its type().get + switch)
     // for primitive properties, and also skip type detection for nested
@@ -2665,6 +2707,553 @@ static od_plan_ptr compile_od_plan(const schema_node_ptr& node) {
   }
 
   return plan;
+}
+
+// --- Schema-driven byte scanner ---
+// A third validation path: walk the JSON buffer directly using the od_plan's
+// shape, never invoking simdjson. Designed for eligible Fastify-style schemas
+// where the structure is fully known: top-level object with primitive props,
+// nested objects one level deep, primitive arrays, plus inline numeric/string
+// constraints. On any unsupported feature seen at runtime (escapes, floats
+// where ints expected, unknown keys without no_additional, overflow), the
+// scanner returns scan_result::fallback and the caller resumes from the
+// existing on-demand path on the original buffer.
+
+enum class scan_result : uint8_t { ok, fail, fallback };
+
+static inline uint64_t utf8_length_fast(std::string_view s);
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#define ATA_HAS_NEON 1
+#endif
+
+#if ATA_HAS_NEON
+// NEON: find first '"' or '\\' or byte < 0x20 in a 16-byte chunk loaded
+// from p. Updates has_high if any byte has its top bit set. Returns byte
+// index 0-15, or -1 if none.
+//
+// Movemask via vshrn_n_u16: each input u16 contributes 4 bits to the
+// output u8, packing 16 byte-mask bits into a single 64-bit value.
+static inline int neon_string_term_pos(const char* p, bool& has_high) {
+  uint8x16_t v  = vld1q_u8(reinterpret_cast<const uint8_t*>(p));
+  uint8x16_t q  = vceqq_u8(v, vdupq_n_u8('"'));
+  uint8x16_t bs = vceqq_u8(v, vdupq_n_u8('\\'));
+  uint8x16_t lt = vcltq_u8(v, vdupq_n_u8(0x20));
+  uint8x16_t hi = vandq_u8(v, vdupq_n_u8(0x80));
+
+  if (vmaxvq_u8(hi)) has_high = true;
+
+  uint8x16_t any = vorrq_u8(vorrq_u8(q, bs), lt);
+  uint8x8_t sn = vshrn_n_u16(vreinterpretq_u16_u8(any), 4);
+  uint64_t mask = vget_lane_u64(vreinterpret_u64_u8(sn), 0);
+  if (mask == 0) return -1;
+  return (int)(__builtin_ctzll(mask) >> 2);
+}
+#endif
+
+// SWAR: find first '"' or '\\' or byte < 0x20 in 8-byte chunk.
+// Updates has_high if any byte has its top bit set.
+// Returns byte index 0-7 of first match, or -1 if none.
+//
+// The < 0x20 test uses (b & 0xE0) == 0; mask values for ASCII text are
+// 0x20 / 0x40 / 0x60, never 0, so the standard "find zero byte" SWAR is
+// borrow-safe for typical JSON content.
+static inline int swar_string_term_pos(uint64_t v, bool& has_high) {
+  has_high |= (v & 0x8080808080808080ULL) != 0;
+
+  const uint64_t one = 0x0101010101010101ULL;
+  const uint64_t himask = 0x8080808080808080ULL;
+
+  uint64_t q  = v ^ 0x2222222222222222ULL;     // '"'
+  uint64_t mq = (q - one) & ~q & himask;
+
+  uint64_t s  = v ^ 0x5C5C5C5C5C5C5C5CULL;     // '\'
+  uint64_t ms = (s - one) & ~s & himask;
+
+  uint64_t l  = v & 0xE0E0E0E0E0E0E0E0ULL;     // < 0x20
+  uint64_t ml = (l - one) & ~l & himask;
+
+  uint64_t m = mq | ms | ml;
+  if (m == 0) return -1;
+  return (int)(__builtin_ctzll(m) >> 3);
+}
+
+// Recursively decide if a plan and all its sub-plans are eligible for the
+// scanner. Pre-condition: caller has confirmed plan.supported.
+static bool fast_scan_eligible_recursive(const od_plan& plan) {
+  if (!plan.supported) return false;
+
+  // Reject schemas that constrain only "number" without "integer" — the
+  // scanner doesn't parse floating-point. Mixed (integer|number, i.e. any
+  // schema that accepts integers) is fine: scanner consumes the integer
+  // path and falls back if it encounters a decimal/exponent at runtime.
+  if (plan.type_mask) {
+    uint8_t i_bit = json_type_bit(json_type::integer);
+    uint8_t n_bit = json_type_bit(json_type::number);
+    if ((plan.type_mask & n_bit) && !(plan.type_mask & i_bit)) return false;
+  }
+
+  if (plan.object) {
+    for (auto& e : plan.object->entries) {
+      if (e.sub && !fast_scan_eligible_recursive(*e.sub)) return false;
+    }
+  }
+  if (plan.array && plan.array->items) {
+    if (!fast_scan_eligible_recursive(*plan.array->items)) return false;
+  }
+  return true;
+}
+
+// Top-level eligibility entry. Restricts to schemas whose root validates an
+// object — array roots are uncommon in HTTP body validation and not worth
+// the v1 surface area.
+static bool compute_fast_scan_eligible(const od_plan& plan) {
+  if (!plan.supported || !plan.object) return false;
+  return fast_scan_eligible_recursive(plan);
+}
+
+static inline void scan_skip_ws(const char*& p, const char* end) {
+  while (p < end) {
+    char c = *p;
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') p++;
+    else return;
+  }
+}
+
+// Parse a JSON integer at p. Advances p past the number. Returns:
+//   ok       — out holds the value
+//   fail     — not a valid number start (caller treats as schema failure)
+//   fallback — overflow or contains '.', 'e', 'E' (caller restarts on-demand)
+static scan_result scan_integer_value(const char*& p, const char* end, int64_t& out) {
+  if (p >= end) return scan_result::fail;
+  bool neg = (*p == '-');
+  if (neg) {
+    p++;
+    if (p >= end || *p < '0' || *p > '9') return scan_result::fail;
+  } else if (*p < '0' || *p > '9') {
+    return scan_result::fail;
+  }
+  // Reject "01"-style leading zeros to match simdjson's strict number parse.
+  if (*p == '0' && p + 1 < end && p[1] >= '0' && p[1] <= '9') return scan_result::fail;
+
+  uint64_t mag = 0;
+  while (p < end && *p >= '0' && *p <= '9') {
+    uint64_t d = (uint64_t)(*p - '0');
+    if (mag > (UINT64_MAX - d) / 10) return scan_result::fallback;
+    mag = mag * 10 + d;
+    p++;
+  }
+  if (p < end && (*p == '.' || *p == 'e' || *p == 'E')) return scan_result::fallback;
+
+  if (neg) {
+    if (mag > (uint64_t)INT64_MAX + 1) return scan_result::fallback;
+    out = (mag == (uint64_t)INT64_MAX + 1) ? INT64_MIN : -(int64_t)mag;
+  } else {
+    if (mag > (uint64_t)INT64_MAX) return scan_result::fallback;
+    out = (int64_t)mag;
+  }
+  return scan_result::ok;
+}
+
+// Forward declarations for the mutually recursive scanners.
+static scan_result fast_scan_value(const od_plan& plan, const char*& p, const char* end);
+static scan_result fast_scan_object(const od_plan& plan, const char*& p, const char* end);
+static scan_result fast_scan_array(const od_plan& plan, const char*& p, const char* end);
+
+// Caller has consumed the opening '"'. Scans string contents 8 bytes at
+// a time (SWAR), applies constraints, advances p past the closing '"'.
+// Buffer padding (REQUIRED_PADDING = 64) guarantees the over-read of the
+// final block stays in addressable memory.
+static scan_result fast_scan_string(const od_plan& plan, const char*& p, const char* end) {
+  const char* s_start = p;
+  bool has_high = false;
+
+  while (p < end) {
+    uint64_t v;
+    std::memcpy(&v, p, 8);
+    int idx = swar_string_term_pos(v, has_high);
+    if (idx < 0) {
+      p += 8;
+      continue;
+    }
+    const char* hit = p + idx;
+    if (hit >= end) return scan_result::fail;  // matched padding zero
+    uint8_t c = (uint8_t)*hit;
+    if (c == '"') {
+      std::string_view sv(s_start, (size_t)(hit - s_start));
+      p = hit + 1;
+
+      if (plan.min_length || plan.max_length) {
+        uint64_t len = has_high ? utf8_length_fast(sv) : sv.size();
+        if (plan.min_length && len < *plan.min_length) return scan_result::fail;
+        if (plan.max_length && len > *plan.max_length) return scan_result::fail;
+      }
+      if (plan.digit_pattern) {
+        auto& dp = *plan.digit_pattern;
+        if (sv.size() < dp.min_len || sv.size() > dp.max_len) return scan_result::fail;
+        const uint8_t* sp = reinterpret_cast<const uint8_t*>(sv.data());
+        for (size_t i = 0, n = sv.size(); i < n; i++) {
+          if (sp[i] < '0' || sp[i] > '9') return scan_result::fail;
+        }
+      }
+#ifndef ATA_NO_RE2
+      else if (plan.pattern) {
+        if (!re2::RE2::PartialMatch(re2::StringPiece(sv.data(), sv.size()), *plan.pattern))
+          return scan_result::fail;
+      }
+#endif
+      if (plan.format_id != 255) {
+        if (!check_format_by_id(sv, plan.format_id)) return scan_result::fail;
+      }
+      if (plan.enum_check) {
+        bool match = false;
+        for (auto& s : plan.enum_check->strings) {
+          if (sv.size() == s.size() && std::memcmp(sv.data(), s.data(), s.size()) == 0) {
+            match = true;
+            break;
+          }
+        }
+        if (!match) return scan_result::fail;
+      }
+      return scan_result::ok;
+    }
+    if (c == '\\') return scan_result::fallback;
+    return scan_result::fail;  // < 0x20 control char in string
+  }
+  return scan_result::fail;
+}
+
+static scan_result fast_scan_value(const od_plan& plan, const char*& p, const char* end) {
+  scan_skip_ws(p, end);
+  if (p >= end) return scan_result::fail;
+  char c = *p;
+
+  switch (c) {
+    case '{': {
+      if (plan.type_mask && !(plan.type_mask & json_type_bit(json_type::object)))
+        return scan_result::fail;
+      p++;
+      return fast_scan_object(plan, p, end);
+    }
+    case '[': {
+      if (plan.type_mask && !(plan.type_mask & json_type_bit(json_type::array)))
+        return scan_result::fail;
+      p++;
+      return fast_scan_array(plan, p, end);
+    }
+    case '"': {
+      if (plan.type_mask && !(plan.type_mask & json_type_bit(json_type::string)))
+        return scan_result::fail;
+      p++;
+      return fast_scan_string(plan, p, end);
+    }
+    case 't': {
+      if (p + 4 > end || p[1] != 'r' || p[2] != 'u' || p[3] != 'e') return scan_result::fail;
+      if (plan.type_mask && !(plan.type_mask & json_type_bit(json_type::boolean)))
+        return scan_result::fail;
+      p += 4;
+      if (plan.enum_check && !plan.enum_check->has_true) return scan_result::fail;
+      return scan_result::ok;
+    }
+    case 'f': {
+      if (p + 5 > end || p[1] != 'a' || p[2] != 'l' || p[3] != 's' || p[4] != 'e')
+        return scan_result::fail;
+      if (plan.type_mask && !(plan.type_mask & json_type_bit(json_type::boolean)))
+        return scan_result::fail;
+      p += 5;
+      if (plan.enum_check && !plan.enum_check->has_false) return scan_result::fail;
+      return scan_result::ok;
+    }
+    case 'n': {
+      if (p + 4 > end || p[1] != 'u' || p[2] != 'l' || p[3] != 'l') return scan_result::fail;
+      if (plan.type_mask && !(plan.type_mask & json_type_bit(json_type::null_value)))
+        return scan_result::fail;
+      p += 4;
+      if (plan.enum_check && !plan.enum_check->has_null) return scan_result::fail;
+      return scan_result::ok;
+    }
+    case '-': case '0': case '1': case '2': case '3':
+    case '4': case '5': case '6': case '7': case '8': case '9': {
+      if (plan.type_mask) {
+        uint8_t int_bits = json_type_bit(json_type::integer) | json_type_bit(json_type::number);
+        if (!(plan.type_mask & int_bits)) return scan_result::fail;
+      }
+      int64_t iv;
+      scan_result r = scan_integer_value(p, end, iv);
+      if (r != scan_result::ok) return r;
+
+      uint8_t f = plan.num_flags;
+      if (f) {
+        double v = (double)iv;
+        if ((f & od_plan::HAS_MIN) && v < plan.num_min) return scan_result::fail;
+        if ((f & od_plan::HAS_MAX) && v > plan.num_max) return scan_result::fail;
+        if ((f & od_plan::HAS_EX_MIN) && v <= plan.num_ex_min) return scan_result::fail;
+        if ((f & od_plan::HAS_EX_MAX) && v >= plan.num_ex_max) return scan_result::fail;
+        if (f & od_plan::HAS_MUL) {
+          double r2 = std::fmod(v, plan.num_mul);
+          if (std::abs(r2) > 1e-8 && std::abs(r2 - plan.num_mul) > 1e-8) return scan_result::fail;
+        }
+      }
+      if (plan.enum_check) {
+        bool match = false;
+        for (auto i : plan.enum_check->integers) if (i == iv) { match = true; break; }
+        if (!match) {
+          double v = (double)iv;
+          for (auto d : plan.enum_check->doubles) if (d == v) { match = true; break; }
+        }
+        if (!match) return scan_result::fail;
+      }
+      return scan_result::ok;
+    }
+    default:
+      return scan_result::fail;
+  }
+}
+
+// Caller has consumed the opening '{'.
+static scan_result fast_scan_object(const od_plan& plan, const char*& p, const char* end) {
+  if (!plan.object) return scan_result::fallback;
+  auto& op = *plan.object;
+
+  uint64_t required_mask = (op.required_count >= 64)
+      ? ~0ULL : ((1ULL << op.required_count) - 1);
+  uint64_t required_found = 0;
+  uint64_t prop_count = 0;
+
+  scan_skip_ws(p, end);
+  if (p < end && *p == '}') {
+    p++;
+    if (required_mask) return scan_result::fail;
+    if (op.min_props && 0 < *op.min_props) return scan_result::fail;
+    return scan_result::ok;
+  }
+
+  for (;;) {
+    scan_skip_ws(p, end);
+    if (p >= end || *p != '"') return scan_result::fail;
+    p++;
+
+    const char* k_start = p;
+    bool key_has_high = false;
+    while (p < end) {
+      uint64_t v;
+      std::memcpy(&v, p, 8);
+      int idx = swar_string_term_pos(v, key_has_high);
+      if (idx < 0) { p += 8; continue; }
+      const char* hit = p + idx;
+      if (hit >= end) return scan_result::fail;
+      uint8_t kc = (uint8_t)*hit;
+      if (kc == '"') { p = hit; break; }
+      if (kc == '\\') return scan_result::fallback;
+      return scan_result::fail;
+    }
+    if (p >= end) return scan_result::fail;
+    if (key_has_high) return scan_result::fallback;  // non-ASCII key — slow path
+    size_t klen = (size_t)(p - k_start);
+    p++;
+    prop_count++;
+
+    // Build a uint64_t representation of the key for short keys; lets the
+    // dispatch loop below compare keys with one cmp instead of memcmp.
+    static constexpr uint64_t key_len_masks[9] = {
+      0, 0xFFULL, 0xFFFFULL, 0xFFFFFFULL, 0xFFFFFFFFULL,
+      0xFFFFFFFFFFULL, 0xFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL
+    };
+    uint64_t key_first8 = 0;
+    if (klen <= 8) {
+      std::memcpy(&key_first8, k_start, 8);  // safe due to scanner buffer padding
+      key_first8 &= key_len_masks[klen];
+    }
+
+    scan_skip_ws(p, end);
+    if (p >= end || *p != ':') return scan_result::fail;
+    p++;
+
+    // Cache-friendly SoA lookup: walk the parallel hot arrays first,
+    // then dereference the matched entry. For the common case (all keys
+    // ≤ 8 ASCII bytes) this touches one or two cache lines regardless
+    // of how many properties the schema declares.
+    size_t found = SIZE_MAX;
+    const size_t n = op.entries.size();
+    const uint64_t* hk = op.hot_key_first8.data();
+    const uint8_t*  hl = op.hot_key_len_inline.data();
+    for (size_t i = 0; i < n; i++) {
+      if (hl[i] && hl[i] == klen && hk[i] == key_first8) { found = i; break; }
+    }
+    if (found == SIZE_MAX) {
+      // Slow fallback for long / non-ASCII keys.
+      for (size_t i = 0; i < n; i++) {
+        if (hl[i]) continue;
+        auto& e = op.entries[i];
+        if (klen == e.key.size() &&
+            std::memcmp(k_start, e.key.data(), klen) == 0) { found = i; break; }
+      }
+    }
+
+    bool matched = false;
+    if (found != SIZE_MAX) {
+      auto& e = op.entries[found];
+      matched = true;
+      {
+        if (e.required_idx >= 0)
+          required_found |= (1ULL << e.required_idx);
+        if (!e.sub) return scan_result::fallback;
+
+        // Inline dispatch by pre-computed fast_kind: skips fast_scan_value's
+        // skip_ws + switch + type_mask check.
+        scan_skip_ws(p, end);
+        if (p >= end) return scan_result::fail;
+        const od_plan& sub = *e.sub;
+        switch (e.fk) {
+          case od_plan::fast_kind::INTEGER: {
+            char c = *p;
+            if (c != '-' && (c < '0' || c > '9')) return scan_result::fail;
+            int64_t iv;
+            scan_result r = scan_integer_value(p, end, iv);
+            if (r != scan_result::ok) return r;
+            uint8_t f = sub.num_flags;
+            if (f) {
+              double v = (double)iv;
+              if ((f & od_plan::HAS_MIN) && v < sub.num_min) return scan_result::fail;
+              if ((f & od_plan::HAS_MAX) && v > sub.num_max) return scan_result::fail;
+              if ((f & od_plan::HAS_EX_MIN) && v <= sub.num_ex_min) return scan_result::fail;
+              if ((f & od_plan::HAS_EX_MAX) && v >= sub.num_ex_max) return scan_result::fail;
+              if (f & od_plan::HAS_MUL) {
+                double r2 = std::fmod(v, sub.num_mul);
+                if (std::abs(r2) > 1e-8 && std::abs(r2 - sub.num_mul) > 1e-8)
+                  return scan_result::fail;
+              }
+            }
+            if (sub.enum_check) {
+              bool em = false;
+              for (auto i2 : sub.enum_check->integers) if (i2 == iv) { em = true; break; }
+              if (!em) {
+                double v = (double)iv;
+                for (auto d : sub.enum_check->doubles) if (d == v) { em = true; break; }
+              }
+              if (!em) return scan_result::fail;
+            }
+            break;
+          }
+          case od_plan::fast_kind::STRING: {
+            if (*p != '"') return scan_result::fail;
+            p++;
+            scan_result r = fast_scan_string(sub, p, end);
+            if (r != scan_result::ok) return r;
+            break;
+          }
+          case od_plan::fast_kind::BOOLEAN: {
+            if (*p == 't') {
+              if (p + 4 > end || p[1] != 'r' || p[2] != 'u' || p[3] != 'e')
+                return scan_result::fail;
+              p += 4;
+              if (sub.enum_check && !sub.enum_check->has_true) return scan_result::fail;
+            } else if (*p == 'f') {
+              if (p + 5 > end || p[1] != 'a' || p[2] != 'l' || p[3] != 's' || p[4] != 'e')
+                return scan_result::fail;
+              p += 5;
+              if (sub.enum_check && !sub.enum_check->has_false) return scan_result::fail;
+            } else {
+              return scan_result::fail;
+            }
+            break;
+          }
+          case od_plan::fast_kind::OBJECT: {
+            if (*p != '{') return scan_result::fail;
+            p++;
+            scan_result r = fast_scan_object(sub, p, end);
+            if (r != scan_result::ok) return r;
+            break;
+          }
+          case od_plan::fast_kind::ARRAY: {
+            if (*p != '[') return scan_result::fail;
+            p++;
+            scan_result r = fast_scan_array(sub, p, end);
+            if (r != scan_result::ok) return r;
+            break;
+          }
+          case od_plan::fast_kind::OTHER:
+          default: {
+            scan_result r = fast_scan_value(sub, p, end);
+            if (r != scan_result::ok) return r;
+          }
+        }
+      }
+    }
+    if (!matched) {
+      if (op.no_additional) return scan_result::fail;
+      // Unknown property without no_additional: would need a generic
+      // value-skipper. Defer to on-demand for v1.
+      return scan_result::fallback;
+    }
+
+    scan_skip_ws(p, end);
+    if (p >= end) return scan_result::fail;
+    if (*p == ',') { p++; continue; }
+    if (*p == '}') { p++; break; }
+    return scan_result::fail;
+  }
+
+  if ((required_found & required_mask) != required_mask) return scan_result::fail;
+  if (op.min_props && prop_count < *op.min_props) return scan_result::fail;
+  if (op.max_props && prop_count > *op.max_props) return scan_result::fail;
+  return scan_result::ok;
+}
+
+// Caller has consumed the opening '['.
+static scan_result fast_scan_array(const od_plan& plan, const char*& p, const char* end) {
+  uint64_t count = 0;
+
+  scan_skip_ws(p, end);
+  if (p < end && *p == ']') {
+    p++;
+    if (plan.array) {
+      auto& ap = *plan.array;
+      if (ap.min_items && 0 < *ap.min_items) return scan_result::fail;
+    }
+    return scan_result::ok;
+  }
+
+  for (;;) {
+    if (plan.array && plan.array->items) {
+      scan_result r = fast_scan_value(*plan.array->items, p, end);
+      if (r != scan_result::ok) return r;
+    } else {
+      // No item schema: would need a generic skipper. Defer to on-demand.
+      return scan_result::fallback;
+    }
+    count++;
+
+    scan_skip_ws(p, end);
+    if (p >= end) return scan_result::fail;
+    if (*p == ',') { p++; continue; }
+    if (*p == ']') { p++; break; }
+    return scan_result::fail;
+  }
+
+  if (plan.array) {
+    auto& ap = *plan.array;
+    if (ap.min_items && count < *ap.min_items) return scan_result::fail;
+    if (ap.max_items && count > *ap.max_items) return scan_result::fail;
+  }
+  return scan_result::ok;
+}
+
+// Top-level entry: skips leading whitespace, requires a top-level object,
+// dispatches to fast_scan_object. On scan_result::fallback, caller resumes
+// the existing on-demand path on the original buffer.
+static scan_result fast_scan_root(const od_plan& plan, const char* data, size_t length) {
+  const char* p = data;
+  const char* end = data + length;
+  scan_skip_ws(p, end);
+  if (p >= end || *p != '{') return scan_result::fallback;
+  p++;
+  scan_result r = fast_scan_object(plan, p, end);
+  if (r != scan_result::ok) return r;
+  scan_skip_ws(p, end);
+  if (p != end) return scan_result::fail;  // trailing garbage
+  return scan_result::ok;
 }
 
 // Fast ASCII check: if all bytes < 0x80, byte length == codepoint length
@@ -3013,6 +3602,9 @@ schema_ref compile(std::string_view schema_json) {
   ctx->gen_plan.code.push_back({cg::op::END});
   ctx->use_ondemand = plan_supports_ondemand(ctx->gen_plan);
   ctx->od = compile_od_plan(ctx->root);
+  if (ctx->od && ctx->od->supported) {
+    ctx->od->fast_scan_eligible = compute_fast_scan_eligible(*ctx->od);
+  }
 
   schema_ref ref;
   ref.impl = ctx;
@@ -3099,6 +3691,15 @@ validation_result validate(std::string_view schema_json,
 
 bool is_valid_prepadded(const schema_ref& schema, const char* data, size_t length) {
   if (!schema.impl || !schema.impl->root) return false;
+
+  // Schema-driven byte scanner: bypass simdjson for eligible schemas.
+  // Saves the ~40 ns simdjson on-demand floor on small documents.
+  if (schema.impl->od && schema.impl->od->fast_scan_eligible && length >= 32) {
+    scan_result r = fast_scan_root(*schema.impl->od, data, length);
+    if (r == scan_result::ok) return true;
+    if (r == scan_result::fail) return false;
+    // fallback — drop through to on-demand path
+  }
 
   simdjson::padded_string fallback;
   auto psv = get_free_padded_view(data, length, fallback);
