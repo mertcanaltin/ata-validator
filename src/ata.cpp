@@ -1360,8 +1360,10 @@ static void validate_node(const schema_node_ptr& node,
           expected += json_type_name(static_cast<json_type>(b));
         }
       }
+      std::string actual = std::string(type_of_sv(value));
       errors.push_back({error_code::type_mismatch, path,
-                        "expected type " + expected + ", got " + std::string(type_of_sv(value))});
+                        "expected type " + expected + ", got " + actual,
+                        expected, actual});
       ATA_CHECK_EARLY();
     }
   }
