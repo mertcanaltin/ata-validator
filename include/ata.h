@@ -8,16 +8,16 @@
 #include <variant>
 #include <vector>
 
-#define ATA_VERSION "0.10.3"
+#define ATA_VERSION "0.10.4"
 
 namespace ata {
 
 inline constexpr uint32_t VERSION_MAJOR = 0;
 inline constexpr uint32_t VERSION_MINOR = 10;
-inline constexpr uint32_t VERSION_REVISION = 3;
+inline constexpr uint32_t VERSION_REVISION = 4;
 
 inline constexpr std::string_view version() noexcept {
-  return "0.10.3";
+  return "0.10.4";
 }
 
 enum class error_code : uint8_t {
@@ -55,6 +55,8 @@ struct validation_error {
   error_code code;
   std::string path;
   std::string message;
+  std::string expected;
+  std::string actual;
 };
 
 struct validation_result {
