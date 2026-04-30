@@ -218,6 +218,57 @@ TEST(additional_properties_false) {
   ASSERT(!r2.valid);
 }
 
+TEST(additional_properties_did_you_mean_typo) {
+  auto schema = R"({
+    "type": "object",
+    "properties": {"name": {}},
+    "additionalProperties": false
+  })";
+  auto r = ata::validate(schema, R"({"naem": 1})");
+  ASSERT(!r.valid);
+  ASSERT(r.errors.size() == 1);
+  ASSERT(r.errors[0].code == ata::error_code::additional_property_not_allowed);
+  ASSERT(r.errors[0].message.find("did you mean \"name\"") != std::string::npos);
+}
+
+TEST(additional_properties_did_you_mean_prefix) {
+  auto schema = R"({
+    "type": "object",
+    "properties": {"test": {}, "watch": {}, "permission": {}},
+    "additionalProperties": false
+  })";
+  auto r = ata::validate(schema, R"({"testRunner": 1})");
+  ASSERT(!r.valid);
+  ASSERT(r.errors.size() == 1);
+  ASSERT(r.errors[0].message.find("did you mean \"test\"") != std::string::npos);
+}
+
+TEST(additional_properties_no_suggestion_when_far) {
+  auto schema = R"({
+    "type": "object",
+    "properties": {"name": {}},
+    "additionalProperties": false
+  })";
+  auto r = ata::validate(schema, R"({"completelyUnrelated": 1})");
+  ASSERT(!r.valid);
+  ASSERT(r.errors.size() == 1);
+  // No "did you mean" hint when nothing is close
+  ASSERT(r.errors[0].message == "additional property not allowed: completelyUnrelated");
+}
+
+TEST(additional_properties_did_you_mean_multiple_candidates) {
+  // "tests" is one edit from "test" and one edit from "tests" if it existed.
+  // We only have "test" — should suggest it.
+  auto schema = R"({
+    "type": "object",
+    "properties": {"test": {}, "watch": {}},
+    "additionalProperties": false
+  })";
+  auto r = ata::validate(schema, R"({"tests": 1})");
+  ASSERT(!r.valid);
+  ASSERT(r.errors[0].message.find("did you mean \"test\"") != std::string::npos);
+}
+
 TEST(additional_properties_schema) {
   auto schema = R"({
     "type": "object",

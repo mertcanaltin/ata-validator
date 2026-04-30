@@ -1,4 +1,4 @@
-/* auto-generated on 2026-04-18 10:54:35 +0100. Do not edit! */
+/* auto-generated on 2026-04-30 21:36:25 +0300. Do not edit! */
 /* begin file include/ata.h */
 #pragma once
 
@@ -10,16 +10,16 @@
 #include <variant>
 #include <vector>
 
-#define ATA_VERSION "0.10.3"
+#define ATA_VERSION "0.10.6"
 
 namespace ata {
 
 inline constexpr uint32_t VERSION_MAJOR = 0;
 inline constexpr uint32_t VERSION_MINOR = 10;
-inline constexpr uint32_t VERSION_REVISION = 3;
+inline constexpr uint32_t VERSION_REVISION = 6;
 
 inline constexpr std::string_view version() noexcept {
-  return "0.10.3";
+  return "0.10.6";
 }
 
 enum class error_code : uint8_t {
@@ -57,6 +57,8 @@ struct validation_error {
   error_code code;
   std::string path;
   std::string message;
+  std::string expected;
+  std::string actual;
 };
 
 struct validation_result {
@@ -90,6 +92,9 @@ schema_ref compile(std::string_view schema_json);
 // Validate a JSON document against a compiled schema.
 validation_result validate(const schema_ref& schema, std::string_view json,
                            const validate_options& opts = {});
+
+// Format a validation_error as a single-line prose sentence.
+std::string format_prose(const validation_error& err);
 
 // Validate a JSON document against a schema (compiles schema each time).
 validation_result validate(std::string_view schema_json,
