@@ -140,8 +140,12 @@ export class Validator {
    */
   static bundleStandalone(schemas: object[], options?: BundleStandaloneOptions): string;
 
-  /** Bundle multiple schemas with deduplicated shared templates. Smaller output than bundle(). */
-  static bundleCompact(schemas: object[], options?: ValidatorOptions): string;
+  /**
+   * Bundle multiple schemas with deduplicated shared templates. Smaller output
+   * than bundle(). Accepts the same options as bundleStandalone, including
+   * `format: 'esm' | 'cjs'` and cross-schema `$ref` resolution.
+   */
+  static bundleCompact(schemas: object[], options?: BundleStandaloneOptions): string;
 
   /** Load a bundle created by Validator.bundle(). Returns array of Validator instances. */
   static loadBundle(mods: object[], schemas: object[], options?: ValidatorOptions): Validator[];
